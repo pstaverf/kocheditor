@@ -73,6 +73,9 @@ function assert(cond, msg) {
     };
     try {
       const bot = require("./bot");
+      // Основной флоу теста шлёт действия пачками быстрее 2/сек — для него
+      // лимит ослабляем; строгий порог проверяем отдельно на спамере.
+      bot.ANTISPAM.MAX_ACTIONS = 100000;
       assert(bot.formatRemaining(45000) === "45 сек", "eta: 45 сек форматируется");
       assert(bot.formatRemaining(90000) === "1 мин 30 сек", "eta: 1 мин 30 сек форматируется");
       assert(bot.formatRemaining(600000) === "10 мин", "eta: 10 мин форматируется");
@@ -170,6 +173,7 @@ function assert(cond, msg) {
 
       // Анти-спам: флуд -> стикер + предупреждение один раз, дальше молчим.
       {
+        bot.ANTISPAM.MAX_ACTIONS = 2; // строгий порог: >2 действий/сек
         const spammer = 7777;
         const spamMsg = (text) => ({
           update_id: 9,

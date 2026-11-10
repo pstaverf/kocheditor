@@ -549,7 +549,10 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith("/static/")) {
       const name = safeName(p.slice("/static/".length));
       if (!name || !STATIC_FILES.has(name)) return sendError(res, 404, "not found");
-      return serveFile(res, path.join(config.ROOT, name), "public, max-age=3600");
+      // Код/стили/разметку не кэшируем: в Telegram WebView закэшированный
+      // app.js однажды уже "убил" новую вкладку. Картинки — с кэшем.
+      const cache = /\.(?:js|css|html)$/i.test(name) ? "no-cache" : "public, max-age=3600";
+      return serveFile(res, path.join(config.ROOT, name), cache);
     }
     if (p.startsWith("/api/")) return await handleApi(req, res, url);
     if (p === "/telegram/webhook" || p.startsWith("/telegram/webhook/")) {

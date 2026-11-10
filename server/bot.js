@@ -54,12 +54,12 @@ const e = (name) =>
   `<tg-emoji emoji-id="${EMOJI_IDS[name] || ""}">${FALLBACKS[name] || ""}</tg-emoji>`;
 
 // ── Анти-спам (rate limit на действия пользователя) ──────────────────────────
-// Больше MAX_ACTIONS действий за окно — спам: шлём стикер + предупреждение
+// Больше 2 действий в секунду — спам: шлём стикер + предупреждение
 // и на COOLDOWN молча игнорируем все апдейты юзера (кроме платежей: их
 // нельзя терять, иначе не зачислится оплата).
 const ANTISPAM = {
-  WINDOW_MS: 10_000,
-  MAX_ACTIONS: 20,
+  WINDOW_MS: 1_000,
+  MAX_ACTIONS: 2,
   COOLDOWN_MS: 30_000,
   STICKER_FILE_ID:
     "CAACAgIAAxkBAAESL-tq8zKdiryx56eO3azW4ykBEQNA_gACj6QAAs53mUtvux3KYyTjrz0E",
