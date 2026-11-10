@@ -480,6 +480,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.port, config.host, async () => {
   console.log(`[kocheditor] http://${config.host}:${config.port}`);
+  console.log(
+    `[env] BOT_TOKEN=${config.botToken ? "задан" : "НЕ задан"} ` +
+      `PUBLIC_URL=${config.publicUrl || "НЕ задан"} ` +
+      `WEBHOOK_SECRET=${config.webhookSecret ? "задан" : "не задан"}`
+  );
   catalog.computeMeta();
   if (config.botToken && config.publicUrl) {
     try {

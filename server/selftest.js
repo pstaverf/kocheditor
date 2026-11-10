@@ -258,6 +258,24 @@ function assert(cond, msg) {
     }
   }
 
+  // .env подхватывается, если панель не пробросила переменные в окружение.
+  {
+    const envPath = path.join(ROOT, ".env");
+    if (!fs.existsSync(envPath)) {
+      fs.writeFileSync(envPath, "BOT_TOKEN=777:from-dotenv-test\n");
+      try {
+        const out = require("child_process").execFileSync(
+          process.execPath,
+          ["-e", "console.log(require('./server/config').botToken)"],
+          { cwd: ROOT, env: { PATH: process.env.PATH } }
+        ).toString().trim();
+        assert(out === "777:from-dotenv-test", ".env читается сервером");
+      } finally {
+        fs.unlinkSync(envPath);
+      }
+    }
+  }
+
   console.log("\nSELFTEST PASSED");
 })().catch((e) => {
   console.error("\nSELFTEST FAILED:", e);
