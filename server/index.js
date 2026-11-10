@@ -310,6 +310,7 @@ async function handleApi(req, res, url) {
       packs_made: row.packs_made || 0,
       stickers_made: row.stickers_made || 0,
       star_per_sticker: config.starPerSticker || 1,
+      is_admin: bot.isAdmin(user.id),
     });
   }
 
@@ -359,7 +360,7 @@ async function handleApi(req, res, url) {
     }
     const neededStars = Math.min(new Set(ids).size, cap) * (config.starPerSticker || 1);
     const balanceStars = db.getBalance(user.id);
-    if (balanceStars < neededStars) {
+    if (!bot.isAdmin(user.id) && balanceStars < neededStars) {
       return sendJson(res, 402, {
         need_stars: true,
         needed: neededStars,
@@ -433,7 +434,7 @@ async function handleApi(req, res, url) {
     const includedSet = new Set((pack.included || []).map(String));
     const wantAdd = [...new Set(tileIds)].filter((id) => !includedSet.has(id)).length;
     const needAdd = wantAdd * (config.starPerSticker || 1);
-    if (db.getBalance(user.id) < needAdd) {
+    if (!bot.isAdmin(user.id) && db.getBalance(user.id) < needAdd) {
       return sendJson(res, 402, {
         need_stars: true,
         needed: needAdd,
@@ -446,7 +447,7 @@ async function handleApi(req, res, url) {
         { userId: user.id, kind: "add", label: pack.title || "пак" },
         () => build.addTiles(pack, tileIds, body.overrides || {})
       );
-      if (r.added && r.added.length) {
+      if (!bot.isAdmin(user.id) && r.added && r.added.length) {
         db.debitStars(user.id, r.added.length * (config.starPerSticker || 1));
       }
       return sendJson(res, 200, r);
@@ -463,7 +464,7 @@ async function handleApi(req, res, url) {
     const cap = target === "sticker" ? build.STICKER_LIMIT : build.EMOJI_LIMIT;
     const parts = Math.max(1, Math.ceil((pack.included || []).length / cap));
     const needConvert = (pack.included || []).length * (config.starPerSticker || 1);
-    if (db.getBalance(user.id) < needConvert) {
+    if (!bot.isAdmin(user.id) && db.getBalance(user.id) < needConvert) {
       return sendJson(res, 402, {
         need_stars: true,
         needed: needConvert,
@@ -474,7 +475,7 @@ async function handleApi(req, res, url) {
     setImmediate(async () => {
       try {
         await build.convertPack(pack, user.id);
-        db.debitStars(user.id, needConvert);
+        if (!bot.isAdmin(user.id)) db.debitStars(user.id, needConvert);
         console.log(`[convert] pack ${pack.id} -> ${target} for user ${user.id}`);
       } catch (e) {
         console.error("[convert] failed for pack", pack.id, e.message);

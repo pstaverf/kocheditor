@@ -6886,7 +6886,8 @@
       const r = await fetch("/api/profile", { headers: apiHeaders() });
       if (!r.ok) throw new Error("http " + r.status);
       const p = await r.json();
-      if ($("profile-balance")) $("profile-balance").textContent = p.balance_stars ?? 0;
+      if ($("profile-balance")) $("profile-balance").textContent = p.is_admin ? "∞" : (p.balance_stars ?? 0);
+      if ($("profile-balance-sub")) $("profile-balance-sub").textContent = p.is_admin ? "Ты админ — всё бесплатно 🛡" : "1 стикер / эмодзи = 1 ⭐";
       if ($("profile-packs")) $("profile-packs").textContent = p.packs_made ?? p.packs_count ?? 0;
       if ($("profile-stickers")) $("profile-stickers").textContent = p.stickers_made ?? 0;
       if ($("profile-topup-total")) $("profile-topup-total").textContent = p.total_topup_stars ?? 0;

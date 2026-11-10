@@ -117,7 +117,28 @@ function assert(cond, msg) {
         global: { kind: "text", text: "HELLO", font: "russo" }, perEmoji: {},
       });
       assert(pack && pack.id > 0, "бот: сборка пака с прогрессом");
-      assert(db.getBalance(userId) === 9, "stars: за сборку списан 1 ⭐");
+      assert(db.getBalance(userId) === 10, "stars: админу сборка бесплатна, баланс не тронут");
+      // А обычный пользователь платит: 1 стикер = 1 ⭐.
+      {
+        const payer = 5555;
+        db.creditStars(payer, 3, { chargeId: "payer-1" });
+        const paidPack = await bot.runBuildWithProgress(payer, {
+          title: "Платный", format: "emoji", ids: [3],
+          global: { kind: "text", text: "PAID", font: "russo" }, perEmoji: {},
+        });
+        assert(paidPack && paidPack.id > 0, "stars: сборка обычному юзеру прошла");
+        assert(db.getBalance(payer) === 2, "stars: обычному юзеру списан 1 ⭐ за сборку");
+        let blocked = false;
+        try {
+          await bot.runBuildWithProgress(6666, {
+            title: "Нет звёзд", format: "emoji", ids: [3],
+            global: { kind: "text", text: "NO", font: "russo" }, perEmoji: {},
+          });
+        } catch (err) {
+          blocked = /⭐|звёзд|баланс/i.test(err.message || "");
+        }
+        assert(blocked, "stars: без баланса сборка отклоняется");
+      }
       assert(calls.some((c) => c.method === "createNewStickerSet"), "бот: createNewStickerSet вызван");
       assert(calls.filter((c) => c.method === "editMessageText").length >= 2, "бот: прогресс редактировал сообщение");
       const doneText = calls.filter((c) => c.method === "editMessageText").pop().params.text;
@@ -278,6 +299,7 @@ function assert(cond, msg) {
 
     const profile = await (await fetch(base + "/api/profile")).json();
     assert(typeof profile.balance_stars === "number" && profile.star_per_sticker === 1, "profile: баланс и цена звезды");
+    assert(profile.is_admin === false, "profile: dev-юзер не админ");
 
     const home = await fetch(base + "/");
     assert(home.ok && (await home.text()).includes("app.js"), "index.html отдаётся");

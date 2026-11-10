@@ -243,9 +243,10 @@ async function runBuildWithProgress(userId, job) {
   const title = `Собираю пак «${job.title}»`;
   const cap = job.format === "sticker" ? build.STICKER_LIMIT : build.EMOJI_LIMIT;
   const uniqueCount = new Set((job.ids || []).map(String)).size;
-  const needed = starsNeeded(Math.min(uniqueCount, cap));
+  const admin = isAdmin(userId);
+  const needed = admin ? 0 : starsNeeded(Math.min(uniqueCount, cap));
   const balance = db.getBalance(userId);
-  if (balance < needed) throw needStarsError(needed, balance);
+  if (!admin && balance < needed) throw needStarsError(needed, balance);
 
   let progress = null;
   const ahead = stickerQueue.ahead();
@@ -268,10 +269,14 @@ async function runBuildWithProgress(userId, job) {
           onProgress: progress ? (s, d, t) => progress.update(s, d, t) : undefined,
         });
         // Списываем только за реально созданные эмодзи.
-        if (pack.count > 0) db.debitStars(userId, starsNeeded(pack.count));
+        if (!admin && pack.count > 0) db.debitStars(userId, starsNeeded(pack.count));
         const packObj = db.getPack(pack.id);
         const warn = errors && errors.length ? `\n${e("warn")} Не влезло эмодзи: ${errors.length}` : "";
-        const paid = pack.count > 0 ? `\nСписано: ${starsNeeded(pack.count)} ⭐ · баланс: ${db.getBalance(userId)} ⭐` : "";
+        const paid = admin
+          ? `\n${e("shield")} Админ: бесплатно`
+          : pack.count > 0
+            ? `\nСписано: ${starsNeeded(pack.count)} ⭐ · баланс: ${db.getBalance(userId)} ⭐`
+            : "";
         const text =
           `${e("check")} <b>Пак готов!</b>\n` +
           `${e("doc")} <b>${escapeHtml(pack.title)}</b> · ${pack.count} шт.\n${pack.link}${warn}${paid}`;
@@ -434,8 +439,9 @@ async function doAddTiles(userId, pack, tileIds, progressTitle) {
   const title = progressTitle || `Добавляю в «${pack.title}»`;
   const includedSet = new Set((pack.included || []).map(String));
   const want = [...new Set((tileIds || []).map(String))].filter((id) => !includedSet.has(id)).length;
+  const adminAdd = isAdmin(userId);
   const balance = db.getBalance(userId);
-  if (balance < starsNeeded(want)) {
+  if (!adminAdd && balance < starsNeeded(want)) {
     await tg.sendMessage(
       config.botToken,
       userId,
@@ -461,12 +467,16 @@ async function doAddTiles(userId, pack, tileIds, progressTitle) {
         const { added, errors } = await build.addTiles(pack, tileIds, {}, (s, d, t) =>
           progress.update(s, d, t)
         );
-        if (added.length) db.debitStars(userId, starsNeeded(added.length));
+        if (!adminAdd && added.length) db.debitStars(userId, starsNeeded(added.length));
         const fresh = db.getPack(pack.id) || pack;
         const text =
           `${e("check")} <b>Готово!</b> Добавил: ${added.length}` +
           (errors.length ? `\n${e("warn")} Не получилось: ${errors.length}` : "") +
-          (added.length ? `\nСписано: ${starsNeeded(added.length)} ⭐ · баланс: ${db.getBalance(userId)} ⭐` : "") +
+          (adminAdd && added.length
+            ? `\n${e("shield")} Админ: бесплатно`
+            : added.length
+              ? `\nСписано: ${starsNeeded(added.length)} ⭐ · баланс: ${db.getBalance(userId)} ⭐`
+              : "") +
           `\n${e("doc")} <b>${escapeHtml(fresh.title)}</b> · теперь ${fresh.included.length} шт.\n${fresh.link}`;
         await progress.done(text, packKeyboard(fresh));
       } catch (err) {
@@ -652,7 +662,9 @@ async function sendBalance(userId) {
   await tg.sendMessage(
     config.botToken,
     userId,
-    `${e("control")} <b>Твой баланс:</b> ${db.getBalance(userId)} ⭐\n` +
+    (isAdmin(userId)
+      ? `${e("shield")} <b>Ты админ — тебе всё бесплатно.</b>\n`
+      : `${e("control")} <b>Твой баланс:</b> ${db.getBalance(userId)} ⭐\n`) +
       `1 стикер/эмодзи = ${config.starPerSticker || 1} ⭐\n` +
       `Сделано паков: ${(u && u.packs_made) || 0} · стикеров: ${(u && u.stickers_made) || 0}\n\nПополнить?`,
     { reply_markup: topupKeyboard() }
@@ -872,8 +884,8 @@ async function handleCallback(cq) {
   } else if (action === "conv") {
     const progress = await startProgress(userId, `Конвертирую «${pack.title}»`);
     try {
-      const need = starsNeeded((pack.included || []).length);
-      if (db.getBalance(userId) < need) {
+      const need = isAdmin(userId) ? 0 : starsNeeded((pack.included || []).length);
+      if (need > 0 && db.getBalance(userId) < need) {
         if (progress) {
           await progress.done(
             `${e("warn")} Не хватает ⭐ на конвертацию: нужно ${need}, на балансе ${db.getBalance(userId)}.`,
@@ -883,8 +895,8 @@ async function handleCallback(cq) {
         return;
       }
       const r = await build.convertPack(pack, userId);
-      db.debitStars(userId, need);
-      const text = `${e("repeat")} <b>Конвертация готова!</b>\nНовый формат: ${r.format === "sticker" ? "стикеры" : "эмодзи"}${r.parts > 1 ? `, паков: ${r.parts}` : ""}. Списано ${need} ⭐. Ссылки — в списке /packs`;
+      if (need > 0) db.debitStars(userId, need);
+      const text = `${e("repeat")} <b>Конвертация готова!</b>\nНовый формат: ${r.format === "sticker" ? "стикеры" : "эмодзи"}${r.parts > 1 ? `, паков: ${r.parts}` : ""}.${need > 0 ? ` Списано ${need} ⭐.` : " Админ: бесплатно."} Ссылки — в списке /packs`;
       if (progress) await progress.done(text);
       else await tg.sendMessage(config.botToken, userId, text);
     } catch (err) {
@@ -1070,6 +1082,7 @@ function newWebhookSecret() {
 }
 
 module.exports = {
+  isAdmin,
   formatRemaining,
   ANTISPAM,
   handleMainUpdate,
