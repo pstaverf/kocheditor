@@ -25,6 +25,23 @@ initData не проверяется, бот отключён). Проверка
 За прокси (nginx/Caddy) домен должен терминировать HTTPS — Telegram не откроет
 WebApp и не поставит вебхук на http.
 
+## Запуск на Pterodactyl
+
+Нужен образ **Node.js 22 (минимум 22.5) или 24** — например `nodejs_22` /
+`nodejs_24` (на Node < 22.5 нет `node:sqlite`, бэкенд не стартует).
+Зависимостей у проекта нет, `NODE_PACKAGES` можно оставить пустым.
+
+Startup Command:
+
+```bash
+if [[ -d .git ]] && [[ {{AUTO_UPDATE}} == "1" ]]; then git pull; fi; if [[ ! -z ${NODE_PACKAGES} ]]; then /usr/local/bin/npm install ${NODE_PACKAGES}; fi; if [[ ! -z ${UNNODE_PACKAGES} ]]; then /usr/local/bin/npm uninstall ${UNNODE_PACKAGES}; fi; if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; /usr/local/bin/node --disable-warning=ExperimentalWarning /home/container/server/index.js
+```
+
+Переменные окружения сервера: `BOT_TOKEN`, `PUBLIC_URL` (https-домен с
+обратным прокси на порт сервера), `WEBHOOK_SECRET`. Порт берётся из `PORT`
+или `SERVER_PORT` (его панель пробрасывает сама), `JS_FILE` не нужен —
+точка входа захардкожена в команде как `server/index.js`.
+
 ## Как это устроено
 
 | Путь | Что внутри |

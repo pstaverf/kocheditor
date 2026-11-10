@@ -13,7 +13,8 @@ const botToken = process.env.BOT_TOKEN || "";
 
 module.exports = {
   ROOT,
-  port: intEnv("PORT", 3000),
+  // Pterodactyl и подобные панели пробрасывают порт как SERVER_PORT.
+  port: intEnv("PORT", intEnv("SERVER_PORT", 3000)),
   host: process.env.HOST || "0.0.0.0",
   // Публичный https-адрес, на котором живёт и WebApp, и вебхук, напр. https://example.com
   publicUrl: (process.env.PUBLIC_URL || "").replace(/\/+$/, ""),
