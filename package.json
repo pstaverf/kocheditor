@@ -1,0 +1,13 @@
+{
+  "name": "kocheditor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram Mini App: редактор кастомных эмодзи/стикеров + бот на вебхуке",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node server/selftest.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

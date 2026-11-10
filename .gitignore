@@ -1,1 +1,5 @@
 download.log
+
+# backend runtime
+data/
+.env

@@ -535,7 +535,13 @@
     } catch (_) { /* New tab optional */ }
   }
   async function loadUploads() {
-    state.uploadFiles = [];
+    try {
+      const r = await fetch("/api/uploads/list", { headers: apiHeaders() });
+      if (r.ok) {
+        const items = await r.json();
+        if (Array.isArray(items)) state.uploadFiles = items;
+      }
+    } catch (_) { /* uploads are optional */ }
   }
   function allFiles() {
     const combined = state.masterFiles.concat(state.newFiles);

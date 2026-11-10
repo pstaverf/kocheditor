@@ -1,0 +1,497 @@
+"use strict";
+// kocheditor backend: статика WebApp + JSON API + вебхуки ботов на одном домене.
+// Запуск: BOT_TOKEN=... PUBLIC_URL=https://domain node server/index.js
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const config = require("./config");
+const db = require("./db");
+const tg = require("./telegram");
+const catalog = require("./catalog");
+const render = require("./render");
+const build = require("./build");
+const bot = require("./bot");
+
+db.load();
+catalog.scan();
+
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".svg": "image/svg+xml",
+  ".json": "application/json; charset=utf-8",
+  ".ttf": "font/ttf",
+};
+
+function sendJson(res, status, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+function sendError(res, status, message, extra = {}) {
+  sendJson(res, status, { error: message, ...extra });
+}
+
+function readBody(req, limit = 32 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > limit) {
+        reject(new Error("payload too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+async function readJson(req) {
+  const buf = await readBody(req);
+  if (!buf.length) return {};
+  return JSON.parse(buf.toString("utf8"));
+}
+
+// ── Авторизация WebApp ───────────────────────────────────────────────────────
+function authUser(req, res) {
+  const initData = req.headers["x-telegram-init-data"] || "";
+  if (config.botToken && initData) {
+    const valid = tg.validateInitData(initData, config.botToken);
+    if (valid && valid.user) return valid.user;
+  }
+  if (config.allowUnauth) {
+    const unsafe = tg.parseInitDataUnsafe(initData);
+    return unsafe || { id: 1, first_name: "Dev" };
+  }
+  sendError(res, 401, "Открой редактор через Telegram");
+  return null;
+}
+
+function serveFile(res, absPath, cacheControl) {
+  fs.readFile(absPath, (err, data) => {
+    if (err) return sendError(res, 404, "not found");
+    res.writeHead(200, {
+      "Content-Type": MIME[path.extname(absPath).toLowerCase()] || "application/octet-stream",
+      "Content-Length": data.length,
+      ...(cacheControl ? { "Cache-Control": cacheControl } : {}),
+    });
+    res.end(data);
+  });
+}
+
+function safeName(raw) {
+  const name = path.basename(decodeURIComponent(raw || ""));
+  if (!name || name.includes("..")) return null;
+  return name;
+}
+
+// ── Роуты API ────────────────────────────────────────────────────────────────
+async function handleApi(req, res, url) {
+  const p = url.pathname;
+  const method = req.method;
+
+  // Каталоги и файлы тайлов (публичные — фронт грузит их без initData).
+  if (method === "GET" && p === "/api/master/list") return sendJson(res, 200, catalog.masterList());
+  if (method === "GET" && p === "/api/new/list") return sendJson(res, 200, catalog.newList());
+  let m;
+  if (method === "GET" && (m = p.match(/^\/api\/(master|new)\/([^/]+)$/))) {
+    const name = safeName(m[2]);
+    const dir = m[1] === "master" ? catalog.MASTER_DIR : catalog.NEW_DIR;
+    if (!name || !name.endsWith(".tgs")) return sendError(res, 404, "not found");
+    return serveFile(res, path.join(dir, name), "public, max-age=86400");
+  }
+  if (method === "GET" && (m = p.match(/^\/api\/new_preview\/([^/]+)$/))) {
+    const name = safeName(m[1]);
+    if (!name) return sendError(res, 404, "not found");
+    return serveFile(res, path.join(catalog.NEW_PREVIEW_DIR, name), "public, max-age=86400");
+  }
+  if (method === "GET" && (m = p.match(/^\/api\/uploads\/([^/]+)$/))) {
+    const user = authUser(req, res);
+    if (!user) return;
+    const name = safeName(m[1]);
+    const item = Object.values(db.state.uploadItems).find(
+      (u) => u.file === name && String(u.user_id) === String(user.id)
+    );
+    if (!item) return sendError(res, 404, "not found");
+    return serveFile(res, path.join(catalog.UPLOAD_DIR, item.file), "private, max-age=3600");
+  }
+
+  // Шрифты.
+  if (method === "GET" && p === "/api/fonts/list") {
+    return sendJson(
+      res,
+      200,
+      render.FONTS.map((f) => ({
+        key: f.key,
+        label: f.label,
+        sample: f.sample,
+        url: `/api/fonts/${f.key}`,
+      }))
+    );
+  }
+  if (method === "GET" && p === "/api/fonts/fallbacks") {
+    return sendJson(res, 200, [
+      {
+        key: "russo",
+        label: "Russo One",
+        url: "/api/fonts/russo",
+        ranges: [[0x400, 0x4ff], [0x500, 0x52f]],
+        default: true,
+      },
+    ]);
+  }
+  if (method === "GET" && (m = p.match(/^\/api\/fonts\/([a-z0-9_-]+)$/i))) {
+    const fontPath = render.fontPath(m[1]);
+    if (!fs.existsSync(fontPath)) return sendError(res, 404, "font not found");
+    return serveFile(res, fontPath, "public, max-age=604800");
+  }
+
+  if (method === "GET" && p === "/api/pricing") {
+    return sendJson(res, 200, config.pricing);
+  }
+
+  // PNG-логотип: сервер вставляет растр в Lottie, фронт докладывает остальной override.
+  if (method === "POST" && p === "/api/png_preview") {
+    const body = await readJson(req).catch(() => null);
+    if (!body || !body.id || !body.logo_png_b64) return sendError(res, 400, "id и logo_png_b64 обязательны");
+    const buf = catalog.readTile(body.id);
+    if (!buf) return sendError(res, 404, "tile not found");
+    try {
+      const json = render.gunzipJson(buf);
+      const animation = await render.applyOverride(json, {
+        kind: "logo",
+        logo_png_b64: String(body.logo_png_b64),
+        scale: +body.scale || 1,
+        offset_x: +body.offset_x || 0,
+        offset_y: +body.offset_y || 0,
+        rotation: 0,
+        font: render.DEFAULT_FONT_KEY,
+        letter_expand: catalog.isNewId(body.id) ? 2.5 : 1.0,
+        allow_fallback: !catalog.isNewId(body.id),
+      });
+      return sendJson(res, 200, { animation });
+    } catch (e) {
+      return sendError(res, 500, String((e && e.message) || e));
+    }
+  }
+
+  // ── Дальше только с initData ──
+  if (p === "/api/pack_bot/save" && method === "POST") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const body = await readJson(req).catch(() => ({}));
+    const token = String(body.bot_token || "").trim();
+    const ownerId = String(body.owner_user_id || "").trim();
+    if (!/^\d+:[\w-]{20,}$/.test(token)) return sendError(res, 400, "Похоже, это не Bot API token");
+    if (!/^\d+$/.test(ownerId)) return sendError(res, 400, "Owner user ID должен быть числом");
+    let me;
+    try {
+      me = await tg.tgApi(token, "getMe");
+    } catch (e) {
+      return sendError(res, 400, "Telegram отклонил токен: " + e.message);
+    }
+    const secret = bot.newWebhookSecret();
+    const rec = {
+      token,
+      bot_id: me.id,
+      bot_username: me.username,
+      owner_user_id: ownerId,
+      webhook_secret: secret,
+      can_message_owner: false,
+    };
+    db.state.packBots[String(user.id)] = rec;
+    db.save();
+    // Свой вебхук персональному боту — чтобы ловить /start владельца.
+    if (config.publicUrl) {
+      tg.setBotWebhook(
+        token,
+        `${config.publicUrl}/telegram/webhook/pack/${encodeURIComponent(user.id)}?s=${secret}`,
+        secret
+      ).catch((e) => console.warn("[pack_bot] setWebhook failed:", e.message));
+    } else {
+      console.warn("[pack_bot] PUBLIC_URL не задан — вебхук персонального бота не поставлен, /start не отследим");
+    }
+    return sendJson(res, 200, packBotPayload(rec));
+  }
+
+  if (p === "/api/pack_bot/delete" && method === "POST") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const rec = db.state.packBots[String(user.id)];
+    if (rec) {
+      tg.tgApi(rec.token, "deleteWebhook").catch(() => {});
+      delete db.state.packBots[String(user.id)];
+      db.save();
+    }
+    return sendJson(res, 200, { configured: false });
+  }
+
+  if (p === "/api/pack_bot/status" && method === "GET") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const rec = db.state.packBots[String(user.id)];
+    return sendJson(res, 200, rec ? packBotPayload(rec) : { configured: false });
+  }
+
+  if (p === "/api/uploads/start" && method === "POST") {
+    const user = authUser(req, res);
+    if (!user) return;
+    db.state.uploadSessions[String(user.id)] = {
+      status: "waiting",
+      expires_at: Date.now() + 10 * 60 * 1000,
+      upload_id: null,
+      error: "",
+    };
+    db.save();
+    return sendJson(res, 200, { ok: true, status: "waiting" });
+  }
+  if (p === "/api/uploads/status" && method === "GET") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const s = db.state.uploadSessions[String(user.id)];
+    if (!s) return sendJson(res, 200, { status: "idle" });
+    if (s.status === "waiting" && s.expires_at < Date.now()) {
+      return sendJson(res, 200, { status: "expired", error: "Время вышло. Нажми «+» ещё раз." });
+    }
+    const out = { status: s.status, error: s.error || "" };
+    if (s.status === "ready" && s.upload_id) {
+      const item = db.state.uploadItems[s.upload_id];
+      if (item) out.upload = { id: item.id, file: item.file, v: item.v };
+    }
+    return sendJson(res, 200, out);
+  }
+  if (p === "/api/uploads/cancel" && method === "POST") {
+    const user = authUser(req, res);
+    if (!user) return;
+    delete db.state.uploadSessions[String(user.id)];
+    db.save();
+    return sendJson(res, 200, { ok: true });
+  }
+  if (p === "/api/uploads/list" && method === "GET") {
+    const user = authUser(req, res);
+    if (!user) return;
+    return sendJson(res, 200, catalog.uploadList(user.id));
+  }
+
+  if (p === "/api/build_pack" && method === "POST") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const body = await readJson(req).catch(() => null);
+    if (!body) return sendError(res, 400, "bad json");
+    const format = body.format === "sticker" ? "sticker" : "emoji";
+    const ids = Array.isArray(body.selected) ? body.selected.map(String) : [];
+    if (!ids.length) return sendError(res, 400, "Выбери хотя бы один стикер");
+    const cap = format === "sticker" ? build.STICKER_LIMIT : build.EMOJI_LIMIT;
+    if (ids.length > cap) return sendError(res, 400, `Слишком много — максимум ${cap}`);
+    // Быстрые проверки до запуска фоновой сборки (фронт умеет эти ответы).
+    const botInfo = await build.resolveBot(user.id).catch(() => null);
+    if (!botInfo) return sendJson(res, 403, { need_pack_bot: true, error: "Добавь бота для создания паков" });
+    if (botInfo.source === "user" && !botInfo.canMessageOwner) {
+      return sendJson(res, 403, {
+        need_pack_bot_start: true,
+        bot_username: botInfo.username,
+        owner_user_id: String(user.id),
+        error: "Нажми /start в своём боте",
+      });
+    }
+    const job = {
+      userId: user.id,
+      title: String(body.pack_title || "Pack").slice(0, 40) || "Pack",
+      format,
+      ids,
+      global: body.global || {},
+      perEmoji: body.per_emoji || {},
+    };
+    // Сборка может занять десятки секунд (рендер + загрузки) — не держим запрос.
+    setImmediate(async () => {
+      try {
+        const { pack, errors } = await build.createPack(job);
+        console.log(`[build] pack ${pack.short_name} for user ${user.id}, errors: ${errors.length}`);
+      } catch (e) {
+        console.error("[build] failed for user", user.id, e.message);
+        if (config.botToken) {
+          tg.sendMessage(config.botToken, user.id, "Не удалось собрать пак: " + escapeMsg(e.message)).catch(() => {});
+        }
+      }
+    });
+    return sendJson(res, 200, { ok: true, queued: true });
+  }
+
+  if (p === "/api/packs/list" && method === "GET") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const mine = db.state.packs
+      .filter((pk) => pk.user_id === Number(user.id))
+      .map(build.serializePack);
+    return sendJson(res, 200, mine);
+  }
+
+  if ((m = p.match(/^\/api\/packs\/(\d+)$/)) && method === "GET") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const pack = findOwnPack(user, Number(m[1]));
+    if (!pack) return sendError(res, 404, "Пак не найден");
+    return sendJson(res, 200, build.serializePack(pack));
+  }
+  if ((m = p.match(/^\/api\/packs\/(\d+)\/rename$/)) && method === "POST") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const pack = findOwnPack(user, Number(m[1]));
+    if (!pack) return sendError(res, 404, "Пак не найден");
+    const body = await readJson(req).catch(() => ({}));
+    const title = String(body.title || "").trim().slice(0, 40);
+    if (!title) return sendError(res, 400, "Пустое название");
+    try {
+      await build.renamePack(pack, title);
+      return sendJson(res, 200, { title: pack.title });
+    } catch (e) {
+      return sendError(res, 502, e.message);
+    }
+  }
+  if ((m = p.match(/^\/api\/packs\/(\d+)\/add_tiles$/)) && method === "POST") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const pack = findOwnPack(user, Number(m[1]));
+    if (!pack) return sendError(res, 404, "Пак не найден");
+    const body = await readJson(req).catch(() => ({}));
+    const tileIds = Array.isArray(body.tile_ids) ? body.tile_ids.map(String) : [];
+    if (!tileIds.length) return sendError(res, 400, "tile_ids пуст");
+    try {
+      const r = await build.addTiles(pack, tileIds, body.overrides || {});
+      return sendJson(res, 200, r);
+    } catch (e) {
+      return sendError(res, 502, e.message);
+    }
+  }
+  if ((m = p.match(/^\/api\/packs\/(\d+)\/convert$/)) && method === "POST") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const pack = findOwnPack(user, Number(m[1]));
+    if (!pack) return sendError(res, 404, "Пак не найден");
+    try {
+      const r = await build.convertPack(pack, user.id);
+      return sendJson(res, 200, { ok: true, ...r });
+    } catch (e) {
+      if (e.needPackBot) return sendJson(res, 403, { need_pack_bot: true, error: e.message });
+      if (e.needPackBotStart) {
+        return sendJson(res, 403, { need_pack_bot_start: true, bot_username: e.botUsername, error: e.message });
+      }
+      return sendError(res, 502, e.message);
+    }
+  }
+
+  return sendError(res, 404, "unknown endpoint");
+}
+
+function packBotPayload(rec) {
+  const masked = rec.token ? rec.token.slice(0, rec.token.indexOf(":") + 4) + "…" : "";
+  return {
+    configured: true,
+    bot_username: rec.bot_username,
+    bot_id: rec.bot_id,
+    owner_user_id: rec.owner_user_id,
+    token_mask: masked,
+    can_message_owner: !!rec.can_message_owner,
+    needs_start: !rec.can_message_owner,
+  };
+}
+
+function findOwnPack(user, id) {
+  return db.state.packs.find((pk) => pk.id === id && pk.user_id === Number(user.id)) || null;
+}
+
+function escapeMsg(s) {
+  return String(s || "").replace(/[<>&]/g, "");
+}
+
+// ── Вебхуки ──────────────────────────────────────────────────────────────────
+async function handleWebhook(req, res, url) {
+  const raw = await readBody(req, 4 * 1024 * 1024);
+  let update = {};
+  try {
+    update = JSON.parse(raw.toString("utf8") || "{}");
+  } catch (_) {}
+  // Telegram ждёт быстрый 200, обработку ошибок только логируем.
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end("{}");
+  try {
+    if (url.pathname === "/telegram/webhook") {
+      if (config.webhookSecret) {
+        const secret = req.headers["x-telegram-bot-api-secret-token"];
+        if (secret !== config.webhookSecret) return;
+      }
+      if (config.botToken) await bot.handleMainUpdate(update);
+    } else {
+      const m = url.pathname.match(/^\/telegram\/webhook\/pack\/([^/]+)$/);
+      if (m) await bot.handlePackBotUpdate(decodeURIComponent(m[1]), url.searchParams.get("s") || "", update);
+    }
+  } catch (e) {
+    console.error("[webhook] handler error:", e.message);
+  }
+}
+
+// ── HTTP-сервер ──────────────────────────────────────────────────────────────
+const STATIC_FILES = new Set([
+  "index.html", "app.js", "replacer.js", "style.css", "icons.html",
+  "lottie.min.js", "opentype.min.js", "pako.min.js", "swex-loader-lockup.png",
+]);
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, "http://localhost");
+    const p = url.pathname;
+    if (p === "/healthz") return sendJson(res, 200, { ok: true });
+    if (p === "/" || p === "/index.html") {
+      return serveFile(res, path.join(config.ROOT, "index.html"), "no-cache");
+    }
+    if (p.startsWith("/static/")) {
+      const name = safeName(p.slice("/static/".length));
+      if (!name || !STATIC_FILES.has(name)) return sendError(res, 404, "not found");
+      return serveFile(res, path.join(config.ROOT, name), "public, max-age=3600");
+    }
+    if (p.startsWith("/api/")) return await handleApi(req, res, url);
+    if (p === "/telegram/webhook" || p.startsWith("/telegram/webhook/")) {
+      return await handleWebhook(req, res, url);
+    }
+    return sendError(res, 404, "not found");
+  } catch (e) {
+    console.error("[http]", e);
+    if (!res.headersSent) sendError(res, 500, "internal error");
+  }
+});
+
+server.listen(config.port, config.host, async () => {
+  console.log(`[kocheditor] http://${config.host}:${config.port}`);
+  catalog.computeMeta();
+  if (config.botToken && config.publicUrl) {
+    try {
+      const me = await tg.getMe(config.botToken);
+      await tg.setBotWebhook(
+        config.botToken,
+        `${config.publicUrl}/telegram/webhook`,
+        config.webhookSecret || undefined
+      );
+      await tg
+        .tgApi(config.botToken, "setChatMenuButton", {
+          menu_button: { type: "web_app", text: "Редактор", web_app: { url: config.publicUrl } },
+        })
+        .catch(() => {});
+      console.log(`[bot] @${me.username} webhook -> ${config.publicUrl}/telegram/webhook`);
+    } catch (e) {
+      console.error("[bot] webhook setup failed:", e.message);
+    }
+  } else if (!config.botToken) {
+    console.warn("[bot] BOT_TOKEN не задан — бот и проверка initData отключены (dev-режим)");
+  } else {
+    console.warn("[bot] PUBLIC_URL не задан — вебхук не поставлен. Поставь вручную на /telegram/webhook");
+  }
+});
