@@ -164,6 +164,33 @@ function assert(cond, msg) {
       await bot.handleMainUpdate(cb("pay:25"));
       assert(calls.some((c) => c.method === "sendInvoice" && c.params.currency === "XTR" && c.params.prices[0].amount === 25), "бот: sendInvoice XTR на 25");
 
+      // Анти-спам: флуд -> стикер + предупреждение один раз, дальше молчим.
+      {
+        const spammer = 7777;
+        const spamMsg = (text) => ({
+          update_id: 9,
+          message: { message_id: 9, from: { id: spammer }, chat: { id: spammer }, text },
+        });
+        const before = calls.length;
+        for (let i = 0; i < 30; i++) await bot.handleMainUpdate(spamMsg("/balance"));
+        const spamSticker = calls.filter(
+          (c) => c.method === "sendSticker" && c.params.sticker === "CAACAgIAAxkBAAESL-tq8zKdiryx56eO3azW4ykBEQNA_gACj6QAAs53mUtvux3KYyTjrz0E"
+        );
+        assert(spamSticker.length === 1, "анти-спам: стикер отправлен ровно один раз");
+        const warnTexts = calls
+          .slice(before)
+          .filter((c) => c.method === "sendMessage" && String(c.params.text || "").includes("не спамь"));
+        assert(warnTexts.length === 1, "анти-спам: предупреждение отправлено один раз");
+        const msgsAfterWarn = calls
+          .slice(before)
+          .filter((c) => c.method === "sendMessage" && c.params.chat_id === spammer).length;
+        await bot.handleMainUpdate(spamMsg("/balance"));
+        const msgsNow = calls.filter(
+          (c) => c.method === "sendMessage" && c.params.chat_id === spammer
+        ).length;
+        assert(msgsNow === msgsAfterWarn, "анти-спам: во время кулдауна бот молчит");
+      }
+
       assert(db.listPacks(userId).length === 0, "бот: пак удалён");
       assert(calls.some((c) => c.method === "deleteStickerSet"), "бот: deleteStickerSet вызван");
     } finally {

@@ -53,6 +53,62 @@ const FALLBACKS = {
 const e = (name) =>
   `<tg-emoji emoji-id="${EMOJI_IDS[name] || ""}">${FALLBACKS[name] || ""}</tg-emoji>`;
 
+// ── Анти-спам (rate limit на действия пользователя) ──────────────────────────
+// Больше MAX_ACTIONS действий за окно — спам: шлём стикер + предупреждение
+// и на COOLDOWN молча игнорируем все апдейты юзера (кроме платежей: их
+// нельзя терять, иначе не зачислится оплата).
+const ANTISPAM = {
+  WINDOW_MS: 10_000,
+  MAX_ACTIONS: 20,
+  COOLDOWN_MS: 30_000,
+  STICKER_FILE_ID:
+    "CAACAgIAAxkBAAESL-tq8zKdiryx56eO3azW4ykBEQNA_gACj6QAAs53mUtvux3KYyTjrz0E",
+};
+const spamHits = new Map();
+const spamCooldownUntil = new Map();
+
+// -> "ok" | "warn" (только что превысил, надо наказать) | "blocked" (кулдаун)
+function spamGate(userId) {
+  if (userId == null) return "ok";
+  const now = Date.now();
+  const until = spamCooldownUntil.get(userId) || 0;
+  if (until > now) return "blocked";
+  if (until) spamCooldownUntil.delete(userId);
+  if (spamHits.size > 10_000) {
+    // Не даём картам расти бесконечно.
+    for (const [k, arr] of spamHits) {
+      if (!arr.length || now - arr[arr.length - 1] > ANTISPAM.WINDOW_MS) spamHits.delete(k);
+    }
+  }
+  const hits = (spamHits.get(userId) || []).filter((t) => now - t < ANTISPAM.WINDOW_MS);
+  hits.push(now);
+  if (hits.length > ANTISPAM.MAX_ACTIONS) {
+    spamHits.set(userId, []);
+    spamCooldownUntil.set(userId, now + ANTISPAM.COOLDOWN_MS);
+    return "warn";
+  }
+  spamHits.set(userId, hits);
+  return "ok";
+}
+
+async function punishSpam(userId) {
+  await tg
+    .tgApi(config.botToken, "sendSticker", {
+      chat_id: userId,
+      sticker: ANTISPAM.STICKER_FILE_ID,
+    })
+    .catch(() => {});
+  await tg
+    .sendMessage(
+      config.botToken,
+      userId,
+      `${e("warn")} <b>Эй, не спамь!</b> ${e("cry2")}\n` +
+        `Слишком много запросов подряд — я на ${Math.round(ANTISPAM.COOLDOWN_MS / 1000)} секунд перестану тебе отвечать. ` +
+        `Подожди немного и попробуй снова.`
+    )
+    .catch(() => {});
+}
+
 function escapeHtml(s) {
   return String(s || "")
     .replace(/&/g, "&amp;")
@@ -842,6 +898,14 @@ async function handleMainUpdate(update) {
     return;
   }
   if (update && update.callback_query) {
+    const cqUser = update.callback_query.from && update.callback_query.from.id;
+    const gate = spamGate(cqUser);
+    if (gate === "blocked") return;
+    if (gate === "warn") {
+      await tg.answerCallbackQuery(config.botToken, update.callback_query.id).catch(() => {});
+      await punishSpam(cqUser);
+      return;
+    }
     try {
       await handleCallback(update.callback_query);
     } catch (err) {
@@ -861,6 +925,12 @@ async function handleMainUpdate(update) {
   db.touchUser(msg.from);
   if (msg.successful_payment) {
     await handleSuccessfulPayment(msg);
+    return;
+  }
+  const gate = spamGate(userId);
+  if (gate === "blocked") return;
+  if (gate === "warn") {
+    await punishSpam(userId);
     return;
   }
   const text = typeof msg.text === "string" ? msg.text.trim() : "";
