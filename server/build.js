@@ -237,6 +237,9 @@ async function createPack({ userId, title, format, ids, global, perEmoji, onProg
     created_at: new Date().toISOString(),
   };
   db.insertPack(pack);
+  db.statsInc("packs_created", 1);
+  db.statsInc("stickers_created", rendered.length);
+  db.bumpUserMade(userId, 1, rendered.length);
   // Если сборку ведёт бот с прогрессом (onProgress), финальное сообщение он
   // покажет сам — не дублируем отдельным уведомлением.
   if (!onProgress) notify(bot, userId, `Пак готов: ${link}`).catch(() => {});
@@ -297,6 +300,10 @@ async function addTiles(pack, tileIds, overrides, onProgress) {
     }
   }
   db.updatePack(pack);
+  if (added.length) {
+    db.statsInc("stickers_created", added.length);
+    db.bumpUserMade(pack.user_id, 0, added.length);
+  }
   return { added, errors };
 }
 

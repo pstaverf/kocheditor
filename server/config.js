@@ -48,6 +48,13 @@ module.exports = {
   botToken,
   // Секрет для проверки заголовка X-Telegram-Bot-Api-Secret-Token у главного бота.
   webhookSecret: process.env.WEBHOOK_SECRET || "",
+  // ID админов через запятую (для /stats и /mailing). Пусто = команды закрыты.
+  adminIds: (process.env.ADMIN_IDS || "")
+    .split(",")
+    .map((x) => parseInt(x.trim(), 10))
+    .filter(Number.isFinite),
+  // Цена: 1 стикер/эмодзи = 1 Telegram Star.
+  starPerSticker: 1,
   // Публичный бот, который пишется в подпись «by @…» (как в оригинальном фронте).
   publicPackBotUsername:
     (process.env.PUBLIC_PACK_BOT_USERNAME || "swexmakerbot").replace(/^@+/, ""),

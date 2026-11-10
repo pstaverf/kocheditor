@@ -3,11 +3,14 @@
 const crypto = require("crypto");
 
 class TgError extends Error {
-  constructor(message, code) {
+  constructor(message, code, retryAfter) {
     super(message);
     this.code = code;
+    this.retryAfter = retryAfter || 0;
   }
 }
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function tgApi(token, method, params = {}, files = null) {
   let body;
@@ -24,16 +27,30 @@ async function tgApi(token, method, params = {}, files = null) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(params);
   }
-  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: "POST",
-    headers,
-    body,
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!data.ok) {
-    throw new TgError(data.description || `Telegram ${method} failed (${r.status})`, data.error_code);
+  let lastError = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (data.ok) return data.result;
+    const retryAfter =
+      (data.parameters && data.parameters.retry_after) || (r.status === 429 ? 2 : 0);
+    lastError = new TgError(
+      data.description || `Telegram ${method} failed (${r.status})`,
+      data.error_code,
+      retryAfter
+    );
+    // Flood control: ждём, сколько просит Telegram, и повторяем.
+    if (retryAfter && attempt < 3) {
+      await sleep(Math.min(retryAfter, 15) * 1000);
+      continue;
+    }
+    throw lastError;
   }
-  return data.result;
+  throw lastError;
 }
 
 async function tgDownload(token, filePath) {
@@ -86,7 +103,7 @@ async function getMe(token) {
 }
 
 async function setBotWebhook(token, url, secret) {
-  const params = { url, allowed_updates: ["message", "callback_query"] };
+  const params = { url, allowed_updates: ["message", "callback_query", "pre_checkout_query"] };
   if (secret) params.secret_token = secret;
   return tgApi(token, "setWebhook", params);
 }

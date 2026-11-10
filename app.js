@@ -80,7 +80,7 @@
     textScope:   "global",
     format:      "emoji",
     selected:    new Set(),   // tiles that go into the built pack
-    pricing:     { small_price_rub: 0, mid_price_rub: 0, full_price_rub: 0, passport_price_rub: 0, conversion_price_rub: 0, icon_pack_price_rub: 0, icon_addition_price_rub: 0, addition_price_rub: 0, small_threshold: 10, mid_threshold: 50, passport_ids: [] },
+    pricing:     { star_per_sticker: 1, small_price_rub: 0, mid_price_rub: 0, full_price_rub: 0, passport_price_rub: 0, conversion_price_rub: 0, icon_pack_price_rub: 0, icon_addition_price_rub: 0, addition_price_rub: 0, small_threshold: 10, mid_threshold: 50, passport_ids: [] },
     fonts:       FALLBACK_FONTS.slice(),
     fontFallbacks: [],
     cacheInflight: {},
@@ -2719,23 +2719,9 @@
   }
 
   function computePriceRub() {
-    /** Mirror of services/billing.Billing.quote_pack_price_rub for the live
-     *  CTA price tag. Server is the source of truth — this is for UX. */
-    const p = state.pricing || {};
-    const small = Number.isFinite(+p.small_price_rub) ? +p.small_price_rub : 0;
-    const mid = Number.isFinite(+p.mid_price_rub) ? +p.mid_price_rub : 0;
-    const full = Number.isFinite(+p.full_price_rub) ? +p.full_price_rub : 0;
-    const passport = Number.isFinite(+p.passport_price_rub) ? +p.passport_price_rub : 0;
-    const smallThreshold = +p.small_threshold || 10;
-    const midThreshold = +p.mid_threshold || 50;
-    let count = 0, hasPassport = false;
-    for (const id of state.selected) {
-      if (isPassportId(id)) hasPassport = true;
-      else count += 1;
-    }
-    if (count <= 0) return hasPassport ? passport : 0;
-    const base = count <= smallThreshold ? small : (count <= midThreshold ? mid : full);
-    return base + (hasPassport ? passport : 0);
+    // Цена пака в Telegram Stars: 1 стикер/эмодзи = 1 ⭐ (сервер — источник правды).
+    const per = +(state.pricing && state.pricing.star_per_sticker) || 1;
+    return new Set(state.selected).size * per;
   }
 
   function applyStickerMode() {
@@ -2777,10 +2763,10 @@
     }
     const rub = computePriceRub();
     const priceEl = document.getElementById("pack-price");
-    if (priceEl) priceEl.textContent = rub > 0 ? rub + " ₽" : (n > 0 ? "бесплатно" : "—");
+    if (priceEl) priceEl.textContent = rub > 0 ? rub + " ⭐" : "—";
     const genBtn = document.getElementById("generate");
     if (genBtn) {
-      genBtn.textContent = rub > 0 ? `Создать пак · ${rub} ₽` : "Создать пак";
+      genBtn.textContent = rub > 0 ? `Создать пак · ${rub} ⭐` : "Создать пак";
       genBtn.disabled = buildInFlight || over || n === 0;
     }
     // Passport toggle card state
@@ -4907,6 +4893,15 @@
           openBotAccountModal();
           return;
         }
+        if (data && data.need_stars) {
+          buildInFlight = false;
+          $("generate").disabled = false;
+          setStatus(`Не хватает ⭐: нужно ${data.needed}, у вас ${data.balance}.`);
+          setView("profile");
+          const ps = $("profile-status");
+          if (ps) ps.textContent = `Нужно ${data.needed} ⭐, на балансе ${data.balance} ⭐. Выбери сумму пополнения.`;
+          return;
+        }
         if (data && data.need_pack_bot_start) {
           buildInFlight = false;
           packBotState = {
@@ -5139,7 +5134,8 @@
     const editor = $("view-editor");
     const icons  = $("view-icons");
     const packs  = $("view-packs");
-    const target = name === "home" || name === "icons" || name === "packs" ? name : "editor";
+    const profile = $("view-profile");
+    const target = name === "home" || name === "icons" || name === "packs" || name === "profile" ? name : "editor";
     document.body.classList.toggle("home-mode", target === "home");
     document.querySelectorAll(".topbar-tab").forEach(b => {
       b.classList.toggle("active", b.dataset.view === target);
@@ -5149,6 +5145,14 @@
       editor.classList.add("hidden");
       if (icons) icons.classList.add("hidden");
       if (packs) packs.classList.add("hidden");
+      if (profile) profile.classList.add("hidden");
+    } else if (target === "profile") {
+      if (home) home.classList.add("hidden");
+      editor.classList.add("hidden");
+      if (icons) icons.classList.add("hidden");
+      if (packs) packs.classList.add("hidden");
+      if (profile) profile.classList.remove("hidden");
+      loadProfile();
     } else if (target === "packs") {
       if (home) home.classList.add("hidden");
       editor.classList.add("hidden");
@@ -5159,12 +5163,14 @@
       if (home) home.classList.add("hidden");
       editor.classList.add("hidden");
       packs.classList.add("hidden");
+      if (profile) profile.classList.add("hidden");
       if (icons) icons.classList.remove("hidden");
       lockTelegramVerticalSwipes();
     } else {
       if (home) home.classList.add("hidden");
       packs.classList.add("hidden");
       if (icons) icons.classList.add("hidden");
+      if (profile) profile.classList.add("hidden");
       editor.classList.remove("hidden");
     }
   }
@@ -5820,8 +5826,8 @@
       ? "Сделать стикеры"
       : "Сделать эмодзи";
     sub.textContent = target === "sticker" && parts > 1
-      ? (price > 0 ? `${price}₽ · ${parts} пака` : "бесплатно")
-      : (price > 0 ? `${price}₽ · ссылка в бота` : "бесплатно · ссылка придёт в бота");
+      ? `${count} ⭐ · ${parts} пака`
+      : `${count} ⭐ · ссылка придёт в бота`;
     btn.disabled = !pack;
   }
 
@@ -6867,6 +6873,80 @@
       setPdStatus("Ошибка: " + e.message);
     } finally {
       $("pd-add").disabled = packsState.staged.size === 0;
+    }
+  });
+
+  // ── Profile & Telegram Stars ──────────────────
+  function setProfileStatus(text) {
+    const el = $("profile-status");
+    if (el) el.textContent = text || "";
+  }
+  async function loadProfile() {
+    try {
+      const r = await fetch("/api/profile", { headers: apiHeaders() });
+      if (!r.ok) throw new Error("http " + r.status);
+      const p = await r.json();
+      if ($("profile-balance")) $("profile-balance").textContent = p.balance_stars ?? 0;
+      if ($("profile-packs")) $("profile-packs").textContent = p.packs_made ?? p.packs_count ?? 0;
+      if ($("profile-stickers")) $("profile-stickers").textContent = p.stickers_made ?? 0;
+      if ($("profile-topup-total")) $("profile-topup-total").textContent = p.total_topup_stars ?? 0;
+      if ($("profile-username")) {
+        $("profile-username").textContent = p.username ? "@" + p.username : (p.first_name || "");
+      }
+      return p;
+    } catch (e) {
+      setProfileStatus("Не удалось загрузить профиль. Открой приложение из Telegram.");
+      return null;
+    }
+  }
+  document.querySelectorAll(".topup-chip").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".topup-chip").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      const input = $("topup-amount");
+      if (input) input.value = btn.dataset.topupAmount || "";
+    });
+  });
+  $("topup-btn")?.addEventListener("click", async () => {
+    const raw = parseInt(($("topup-amount")?.value || "").replace(/\D+/g, ""), 10);
+    if (!Number.isFinite(raw) || raw < 1 || raw > 500) {
+      setProfileStatus("Укажи сумму от 1 до 500 ⭐");
+      return;
+    }
+    const btn = $("topup-btn");
+    if (btn) btn.disabled = true;
+    setProfileStatus("Создаю счёт в Telegram…");
+    try {
+      const r = await fetch("/api/billing/invoice", {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ amount: raw }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.invoice_url) throw new Error(data.error || ("http " + r.status));
+      const done = async (status) => {
+        if (btn) btn.disabled = false;
+        if (status === "paid") {
+          setProfileStatus("Оплата прошла! Обновляю баланс…");
+          await loadProfile();
+          setProfileStatus("Баланс пополнен. Можно собирать пак!");
+        } else if (status === "cancelled" || status === "canceled") {
+          setProfileStatus("Оплата отменена.");
+        } else {
+          setProfileStatus("Статус оплаты: " + status);
+          await loadProfile();
+        }
+      };
+      if (tg && typeof tg.openInvoice === "function") {
+        tg.openInvoice(data.invoice_url, (status) => { done(status); });
+      } else {
+        window.open(data.invoice_url, "_blank");
+        setProfileStatus("Счёт открыт. После оплаты вернись и обнови профиль.");
+        if (btn) btn.disabled = false;
+      }
+    } catch (e) {
+      if (btn) btn.disabled = false;
+      setProfileStatus("Ошибка: " + e.message);
     }
   });
 

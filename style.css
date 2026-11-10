@@ -5094,3 +5094,22 @@ body.home-mode .topbar {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Profile / Stars ─────────────────────────────── */
+.profile-balance-card {
+  margin: 14px 14px 18px;
+  padding: 18px;
+  border-radius: 18px;
+  background: linear-gradient(160deg, #1b1b1f, #101012);
+  border: 1px solid rgba(255,255,255,.08);
+  text-align: center;
+}
+.profile-balance-label { color: #9a9aa0; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
+.profile-balance-value { font-size: 42px; font-weight: 800; margin: 6px 0 2px; }
+.profile-balance-sub { color: #9a9aa0; font-size: 13px; }
+.profile-stats-row {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: center;
+  margin-top: 14px; color: #c9c9cf; font-size: 13px;
+}
+.topup-amounts { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 14px 10px; }
+.topup-chip.active { background: #fff; color: #000; border-color: #fff; }

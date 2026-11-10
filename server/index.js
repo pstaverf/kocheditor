@@ -11,6 +11,7 @@ const catalog = require("./catalog");
 const render = require("./render");
 const build = require("./build");
 const bot = require("./bot");
+const { stickerQueue } = require("./queue");
 
 db.open();
 catalog.scan();
@@ -66,11 +67,16 @@ function authUser(req, res) {
   const initData = req.headers["x-telegram-init-data"] || "";
   if (config.botToken && initData) {
     const valid = tg.validateInitData(initData, config.botToken);
-    if (valid && valid.user) return valid.user;
+    if (valid && valid.user) {
+      db.touchUser(valid.user);
+      return valid.user;
+    }
   }
   if (config.allowUnauth) {
     const unsafe = tg.parseInitDataUnsafe(initData);
-    return unsafe || { id: 1, first_name: "Dev" };
+    const user = unsafe || { id: 1, first_name: "Dev" };
+    db.touchUser(user);
+    return user;
   }
   sendError(res, 401, "Открой редактор через Telegram");
   return null;
@@ -172,7 +178,7 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "GET" && p === "/api/pricing") {
-    return sendJson(res, 200, config.pricing);
+    return sendJson(res, 200, { ...config.pricing, star_per_sticker: config.starPerSticker || 1 });
   }
 
   // PNG-логотип: сервер вставляет растр в Lottie, фронт докладывает остальной override.
@@ -289,6 +295,47 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true });
   }
 
+  if (p === "/api/profile" && method === "GET") {
+    const user = authUser(req, res);
+    if (!user) return;
+    const row = db.getUser(user.id) || {};
+    const packs = db.listPacks(user.id);
+    return sendJson(res, 200, {
+      id: Number(user.id),
+      first_name: row.first_name || user.first_name || "",
+      username: row.username || user.username || "",
+      balance_stars: db.getBalance(user.id),
+      total_topup_stars: row.total_topup_stars || 0,
+      packs_count: packs.length,
+      packs_made: row.packs_made || 0,
+      stickers_made: row.stickers_made || 0,
+      star_per_sticker: config.starPerSticker || 1,
+    });
+  }
+
+  if (p === "/api/billing/invoice" && method === "POST") {
+    const user = authUser(req, res);
+    if (!user) return;
+    if (!config.botToken) return sendError(res, 503, "Бот не настроен на сервере");
+    const body = await readJson(req).catch(() => ({}));
+    const amount = Math.floor(Number(body.amount));
+    if (!Number.isFinite(amount) || amount < 1 || amount > 500) {
+      return sendError(res, 400, "Сумма пополнения — от 1 до 500 ⭐");
+    }
+    try {
+      const url = await tg.tgApi(config.botToken, "createInvoiceLink", {
+        title: "Пополнение баланса",
+        description: `${amount} Telegram Stars = ${amount} стикеров/эмодзи в редакторе`,
+        payload: `topup:${user.id}:${amount}:${Date.now().toString(36)}`,
+        currency: "XTR",
+        prices: [{ label: `${amount} Telegram Stars`, amount }],
+      });
+      return sendJson(res, 200, { invoice_url: url, amount });
+    } catch (e) {
+      return sendError(res, 502, "Telegram не создал счёт: " + e.message);
+    }
+  }
+
   if (p === "/api/build_pack" && method === "POST") {
     const user = authUser(req, res);
     if (!user) return;
@@ -308,6 +355,16 @@ async function handleApi(req, res, url) {
         bot_username: botInfo.username,
         owner_user_id: String(user.id),
         error: "Нажми /start в своём боте",
+      });
+    }
+    const neededStars = Math.min(new Set(ids).size, cap) * (config.starPerSticker || 1);
+    const balanceStars = db.getBalance(user.id);
+    if (balanceStars < neededStars) {
+      return sendJson(res, 402, {
+        need_stars: true,
+        needed: neededStars,
+        balance: balanceStars,
+        error: `Не хватает ⭐: нужно ${neededStars}, на балансе ${balanceStars}`,
       });
     }
     const job = {
@@ -373,8 +430,25 @@ async function handleApi(req, res, url) {
     const body = await readJson(req).catch(() => ({}));
     const tileIds = Array.isArray(body.tile_ids) ? body.tile_ids.map(String) : [];
     if (!tileIds.length) return sendError(res, 400, "tile_ids пуст");
+    const includedSet = new Set((pack.included || []).map(String));
+    const wantAdd = [...new Set(tileIds)].filter((id) => !includedSet.has(id)).length;
+    const needAdd = wantAdd * (config.starPerSticker || 1);
+    if (db.getBalance(user.id) < needAdd) {
+      return sendJson(res, 402, {
+        need_stars: true,
+        needed: needAdd,
+        balance: db.getBalance(user.id),
+        error: `Не хватает ⭐: нужно ${needAdd}, на балансе ${db.getBalance(user.id)}`,
+      });
+    }
     try {
-      const r = await build.addTiles(pack, tileIds, body.overrides || {});
+      const r = await stickerQueue.enqueue(
+        { userId: user.id, kind: "add", label: pack.title || "пак" },
+        () => build.addTiles(pack, tileIds, body.overrides || {})
+      );
+      if (r.added && r.added.length) {
+        db.debitStars(user.id, r.added.length * (config.starPerSticker || 1));
+      }
       return sendJson(res, 200, r);
     } catch (e) {
       return sendError(res, 502, e.message);
@@ -388,9 +462,19 @@ async function handleApi(req, res, url) {
     const target = pack.format === "sticker" ? "emoji" : "sticker";
     const cap = target === "sticker" ? build.STICKER_LIMIT : build.EMOJI_LIMIT;
     const parts = Math.max(1, Math.ceil((pack.included || []).length / cap));
+    const needConvert = (pack.included || []).length * (config.starPerSticker || 1);
+    if (db.getBalance(user.id) < needConvert) {
+      return sendJson(res, 402, {
+        need_stars: true,
+        needed: needConvert,
+        balance: db.getBalance(user.id),
+        error: `Не хватает ⭐: нужно ${needConvert}, на балансе ${db.getBalance(user.id)}`,
+      });
+    }
     setImmediate(async () => {
       try {
         await build.convertPack(pack, user.id);
+        db.debitStars(user.id, needConvert);
         console.log(`[convert] pack ${pack.id} -> ${target} for user ${user.id}`);
       } catch (e) {
         console.error("[convert] failed for pack", pack.id, e.message);
@@ -494,6 +578,18 @@ server.listen(config.port, config.host, async () => {
         `${config.publicUrl}/telegram/webhook`,
         config.webhookSecret || undefined
       );
+      await tg
+        .tgApi(config.botToken, "setMyCommands", {
+          commands: [
+            { command: "start", description: "Открыть редактор" },
+            { command: "packs", description: "Мои паки" },
+            { command: "balance", description: "Баланс ⭐" },
+            { command: "topup", description: "Пополнить баланс" },
+            { command: "stats", description: "Статистика (админ)" },
+            { command: "mailing", description: "Рассылка (админ)" },
+          ],
+        })
+        .catch(() => {});
       await tg
         .tgApi(config.botToken, "setChatMenuButton", {
           menu_button: { type: "web_app", text: "Редактор", web_app: { url: config.publicUrl } },

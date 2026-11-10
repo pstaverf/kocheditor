@@ -8,6 +8,7 @@ const zlib = require("zlib");
 
 process.env.DATA_DIR = process.env.DATA_DIR || require("os").tmpdir() + "/kocheditor-selftest-" + process.pid;
 process.env.BOT_TOKEN = "111:fake-test-token";
+process.env.ADMIN_IDS = "4242";
 process.env.PUBLIC_URL = "https://example.test";
 const ROOT = path.resolve(__dirname, "..");
 const PORT = 18000 + Math.floor(Math.random() * 900);
@@ -78,6 +79,28 @@ function assert(cond, msg) {
       const msg = (text) => ({ update_id: 1, message: { message_id: 1, from: { id: userId }, chat: { id: userId }, text } });
       const cb = (data) => ({ update_id: 2, callback_query: { id: "q1", from: { id: userId }, data } });
 
+      // Баланс Stars: идемпотентное пополнение и атомарное списание.
+      db.creditStars(userId, 10, { chargeId: "seed-1" });
+      db.creditStars(userId, 10, { chargeId: "seed-1" });
+      assert(db.getBalance(userId) === 10, "stars: пополнение идемпотентно по charge_id");
+      assert(db.debitStars(userId, 999) === false, "stars: списание больше баланса отклонено");
+      assert(db.debitStars(userId, 0) === true && db.getBalance(userId) === 10, "stars: списание 0 — no-op");
+
+      // Очередь: задачи строго по одной.
+      {
+        const { JobQueue } = require("./queue");
+        const q = new JobQueue();
+        let active = 0, maxActive = 0;
+        const job = (ms) => async () => {
+          active++; maxActive = Math.max(maxActive, active);
+          await new Promise((r) => setTimeout(r, ms));
+          active--;
+          return ms;
+        };
+        const [a, b] = await Promise.all([q.enqueue({ userId, kind: "build" }, job(30)), q.enqueue({ userId, kind: "build" }, job(5))]);
+        assert(a === 30 && b === 5 && maxActive === 1, "queue: сборки выполняются по одной");
+      }
+
       await bot.handleMainUpdate(msg("/start"));
       const startText = calls.find((c) => c.method === "sendMessage").params.text;
       assert(startText.includes('tg-emoji emoji-id="5339517760592421605"'), "бот: /start с кастомным эмодзи");
@@ -87,6 +110,7 @@ function assert(cond, msg) {
         global: { kind: "text", text: "HELLO", font: "russo" }, perEmoji: {},
       });
       assert(pack && pack.id > 0, "бот: сборка пака с прогрессом");
+      assert(db.getBalance(userId) === 9, "stars: за сборку списан 1 ⭐");
       assert(calls.some((c) => c.method === "createNewStickerSet"), "бот: createNewStickerSet вызван");
       assert(calls.filter((c) => c.method === "editMessageText").length >= 2, "бот: прогресс редактировал сообщение");
       const doneText = calls.filter((c) => c.method === "editMessageText").pop().params.text;
@@ -111,6 +135,35 @@ function assert(cond, msg) {
       assert(db.getPack(pack.id).included.length === 1, "бот: повторное добавление без дублей");
 
       await bot.handleMainUpdate(cb(`pk:${pack.id}:delyes`));
+      // Оплата Stars через successful_payment (дубль не списывает дважды).
+      const pay = {
+        update_id: 3,
+        message: {
+          message_id: 5, from: { id: userId }, chat: { id: userId },
+          successful_payment: {
+            currency: "XTR", total_amount: 25,
+            invoice_payload: "topup:" + userId + ":25:zz",
+            telegram_payment_charge_id: "charge-1",
+          },
+        },
+      };
+      const balanceBeforePay = db.getBalance(userId);
+      await bot.handleMainUpdate(pay);
+      await bot.handleMainUpdate(pay);
+      assert(db.getBalance(userId) === balanceBeforePay + 25, "stars: successful_payment зачислен один раз");
+      assert((db.getUser(userId).total_topup_stars || 0) >= 25, "stars: total_topup_stars учтён");
+
+      await bot.handleMainUpdate(msg("/stats"));
+      const statsCall = calls.filter((c) => c.method === "sendMessage").pop();
+      assert(statsCall && statsCall.params.text.includes("Статистика"), "бот: /stats для админа");
+
+      await bot.handleMainUpdate(msg("/topup"));
+      const topupCall = calls.filter((c) => c.method === "sendMessage").pop();
+      const kb = JSON.stringify(topupCall.params.reply_markup || {});
+      assert(kb.includes("pay:25"), "бот: /topup с кнопками сумм");
+      await bot.handleMainUpdate(cb("pay:25"));
+      assert(calls.some((c) => c.method === "sendInvoice" && c.params.currency === "XTR" && c.params.prices[0].amount === 25), "бот: sendInvoice XTR на 25");
+
       assert(db.listPacks(userId).length === 0, "бот: пак удалён");
       assert(calls.some((c) => c.method === "deleteStickerSet"), "бот: deleteStickerSet вызван");
     } finally {
@@ -165,7 +218,7 @@ function assert(cond, msg) {
     assert(fontRes.ok && (await fontRes.arrayBuffer()).byteLength > 10000, "шрифт отдаётся");
 
     const pricing = await (await fetch(base + "/api/pricing")).json();
-    assert(pricing.small_price_rub === 0 && pricing.full_price_rub === 0 && Array.isArray(pricing.passport_ids), "pricing: всё бесплатно");
+    assert(pricing.star_per_sticker === 1 && Array.isArray(pricing.passport_ids), "pricing: 1 ⭐ за стикер");
 
     const png1x1 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAwMCAO+ip1sAAAAASUVORK5CYII=";
@@ -187,6 +240,9 @@ function assert(cond, msg) {
 
     const packs = await (await fetch(base + "/api/packs/list")).json();
     assert(Array.isArray(packs) && packs.length === 0, "packs/list пуст без паков");
+
+    const profile = await (await fetch(base + "/api/profile")).json();
+    assert(typeof profile.balance_stars === "number" && profile.star_per_sticker === 1, "profile: баланс и цена звезды");
 
     const home = await fetch(base + "/");
     assert(home.ok && (await home.text()).includes("app.js"), "index.html отдаётся");

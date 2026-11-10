@@ -57,9 +57,36 @@ function open() {
       user_id TEXT PRIMARY KEY,
       action TEXT NOT NULL,
       pack_id INTEGER,
-      expires_at INTEGER NOT NULL DEFAULT 0
+      expires_at INTEGER NOT NULL DEFAULT 0,
+      payload TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY,
+      first_name TEXT DEFAULT '',
+      username TEXT DEFAULT '',
+      balance_stars INTEGER NOT NULL DEFAULT 0,
+      total_topup_stars INTEGER NOT NULL DEFAULT 0,
+      packs_made INTEGER NOT NULL DEFAULT 0,
+      stickers_made INTEGER NOT NULL DEFAULT 0,
+      first_seen TEXT,
+      last_seen TEXT
+    );
+    CREATE TABLE IF NOT EXISTS payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      amount_stars INTEGER NOT NULL,
+      charge_id TEXT UNIQUE,
+      payload TEXT DEFAULT '',
+      created_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS stats (
+      key TEXT PRIMARY KEY,
+      value INTEGER NOT NULL DEFAULT 0
     );
   `);
+  // Миграция для старых БД: payload у bot_pending.
+  const cols = db.prepare("PRAGMA table_info(bot_pending)").all().map((c) => c.name);
+  if (!cols.includes("payload")) db.exec("ALTER TABLE bot_pending ADD COLUMN payload TEXT DEFAULT ''");
   fixUploadIds();
   return db;
 }
@@ -247,13 +274,13 @@ function deleteUploadItem(id) {
 }
 
 // ── Ожидающие действия бота (rename/add/remove для конкретного пака) ─────────
-function setPending(userId, action, packId, ttlMs = 10 * 60 * 1000) {
+function setPending(userId, action, packId, ttlMs = 10 * 60 * 1000, payload = "") {
   open()
     .prepare(
-      `INSERT INTO bot_pending (user_id, action, pack_id, expires_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET action=excluded.action, pack_id=excluded.pack_id, expires_at=excluded.expires_at`
+      `INSERT INTO bot_pending (user_id, action, pack_id, expires_at, payload) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET action=excluded.action, pack_id=excluded.pack_id, expires_at=excluded.expires_at, payload=excluded.payload`
     )
-    .run(String(userId), action, packId ? Number(packId) : null, Date.now() + ttlMs);
+    .run(String(userId), action, packId ? Number(packId) : null, Date.now() + ttlMs, String(payload || ""));
 }
 function getPending(userId) {
   const row = open()
@@ -268,6 +295,83 @@ function getPending(userId) {
 }
 function clearPending(userId) {
   open().prepare("DELETE FROM bot_pending WHERE user_id = ?").run(String(userId));
+}
+
+// ── Пользователи и баланс (Telegram Stars) ───────────────────────────────────
+function touchUser(u) {
+  if (!u || u.id == null) return;
+  const now = new Date().toISOString();
+  open()
+    .prepare(
+      `INSERT INTO users (id, first_name, username, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         first_name = CASE WHEN excluded.first_name != '' THEN excluded.first_name ELSE users.first_name END,
+         username = CASE WHEN excluded.username != '' THEN excluded.username ELSE users.username END,
+         last_seen = excluded.last_seen`
+    )
+    .run(Number(u.id), u.first_name || "", u.username || "", now, now);
+}
+function getUser(id) {
+  return open().prepare("SELECT * FROM users WHERE id = ?").get(Number(id)) || null;
+}
+function getBalance(id) {
+  const u = getUser(id);
+  return u ? u.balance_stars : 0;
+}
+function creditStars(id, amount, chargeId, payload) {
+  // Допускаем объектную форму: creditStars(id, amount, { chargeId, payload })
+  if (chargeId && typeof chargeId === "object") {
+    payload = chargeId.payload;
+    chargeId = chargeId.chargeId;
+  }
+  amount = Math.floor(Number(amount) || 0);
+  if (amount <= 0) return false;
+  touchUser({ id });
+  const d = open();
+  if (chargeId) {
+    // Идемпотентность: один и тот же successful_payment не кредитуем дважды.
+    const info = d
+      .prepare("INSERT OR IGNORE INTO payments (user_id, amount_stars, charge_id, payload, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(Number(id), amount, chargeId, payload || "", new Date().toISOString());
+    if (!info.changes) return false;
+  } else {
+    d.prepare("INSERT INTO payments (user_id, amount_stars, charge_id, payload, created_at) VALUES (?, ?, NULL, ?, ?)")
+      .run(Number(id), amount, payload || "", new Date().toISOString());
+  }
+  d.prepare("UPDATE users SET balance_stars = balance_stars + ?, total_topup_stars = total_topup_stars + ? WHERE id = ?")
+    .run(amount, amount, Number(id));
+  return true;
+}
+function debitStars(id, amount) {
+  if (amount <= 0) return true;
+  const info = open()
+    .prepare("UPDATE users SET balance_stars = balance_stars - ? WHERE id = ? AND balance_stars >= ?")
+    .run(amount, Number(id), amount);
+  return !!info.changes;
+}
+function bumpUserMade(id, packs, stickers) {
+  touchUser({ id });
+  open()
+    .prepare("UPDATE users SET packs_made = packs_made + ?, stickers_made = stickers_made + ? WHERE id = ?")
+    .run(packs || 0, stickers || 0, Number(id));
+}
+function usersCount() {
+  return open().prepare("SELECT COUNT(*) AS n FROM users").get().n;
+}
+function listUserIds() {
+  return open().prepare("SELECT id FROM users ORDER BY id").all().map((r) => r.id);
+}
+function totalTopupStars() {
+  return open().prepare("SELECT COALESCE(SUM(amount_stars), 0) AS n FROM payments").get().n;
+}
+function statsInc(key, by = 1) {
+  open()
+    .prepare("INSERT INTO stats (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = value + excluded.value")
+    .run(key, by);
+}
+function statsGet(key) {
+  const row = open().prepare("SELECT value FROM stats WHERE key = ?").get(key);
+  return row ? row.value : 0;
 }
 
 module.exports = {
@@ -295,4 +399,15 @@ module.exports = {
   setPending,
   getPending,
   clearPending,
+  touchUser,
+  getUser,
+  getBalance,
+  creditStars,
+  debitStars,
+  bumpUserMade,
+  usersCount,
+  listUserIds,
+  totalTopupStars,
+  statsInc,
+  statsGet,
 };

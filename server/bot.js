@@ -12,6 +12,7 @@ const db = require("./db");
 const catalog = require("./catalog");
 const tg = require("./telegram");
 const build = require("./build");
+const { stickerQueue } = require("./queue");
 
 // Кастомные эмодзи для текстов бота (HTML-разметка tg-emoji; если Telegram не
 // отдаст кастомный — покажется обычный символ внутри тега).
@@ -72,7 +73,7 @@ function progressBar(done, total) {
 
 // ── Прогресс-сообщение в боте ────────────────────────────────────────────────
 // Возвращает объект с update/done/fail или null, если писать некому.
-async function startProgress(userId, title) {
+async function startProgress(userId, title, queuePosition = 0) {
   const token = config.botToken;
   if (!token) return null;
   let msg;
@@ -80,7 +81,9 @@ async function startProgress(userId, title) {
     msg = await tg.sendMessage(
       token,
       userId,
-      `${e("timer")} <b>Загружаю…</b>\n${escapeHtml(title)}\n${progressBar(0, 1)}`
+      queuePosition > 0
+        ? `${e("down")} <b>Вы в очереди</b> №${queuePosition}\n${escapeHtml(title)}\nДойдёт очередь — сразу начну собирать.`
+        : `${e("timer")} <b>Загружаю…</b>\n${escapeHtml(title)}\n${progressBar(0, 1)}`
     );
   } catch (err) {
     console.warn("[bot] progress send failed:", err.message);
@@ -103,6 +106,14 @@ async function startProgress(userId, title) {
     }
   };
   return {
+    async queued(pos) {
+      await edit(
+        `${e("down")} <b>Вы в очереди</b> №${pos}\n${escapeHtml(title)}\nДойдёт очередь — сразу начну собирать.`
+      );
+    },
+    async begin() {
+      await edit(`${e("timer")} <b>Загружаю…</b>\n${escapeHtml(title)}\n${progressBar(0, 1)}`);
+    },
     async update(stage, done, total) {
       const pct = total > 0 ? Math.floor((done / total) * 100) : 100;
       const now = Date.now();
@@ -131,33 +142,72 @@ async function startProgress(userId, title) {
   };
 }
 
-// Сборка пака из мини-аппы: бот показывает прогресс и финальную карточку пака.
+function starsNeeded(count) {
+  return count * (config.starPerSticker || 1);
+}
+
+function needStarsError(needed, balance) {
+  const err = new Error(
+    `Не хватает ⭐: нужно ${needed}, на балансе ${balance}. Пополни командой /topup или в профиле приложения.`
+  );
+  err.needStars = true;
+  err.needed = needed;
+  err.balance = balance;
+  return err;
+}
+
+// Сборка пака из мини-аппы: очередь, бот показывает прогресс и карточку пака.
 async function runBuildWithProgress(userId, job) {
-  const progress = await startProgress(userId, `Собираю пак «${job.title}»`);
-  try {
-    const { pack, errors } = await build.createPack({
-      ...job,
+  const title = `Собираю пак «${job.title}»`;
+  const cap = job.format === "sticker" ? build.STICKER_LIMIT : build.EMOJI_LIMIT;
+  const uniqueCount = new Set((job.ids || []).map(String)).size;
+  const needed = starsNeeded(Math.min(uniqueCount, cap));
+  const balance = db.getBalance(userId);
+  if (balance < needed) throw needStarsError(needed, balance);
+
+  let progress = null;
+  const ahead = stickerQueue.ahead();
+  if (ahead > 0) progress = await startProgress(userId, title, ahead);
+
+  return stickerQueue.enqueue(
+    {
       userId,
-      onProgress: progress ? (s, d, t) => progress.update(s, d, t) : undefined,
-    });
-    const packObj = db.getPack(pack.id);
-    const warn = errors && errors.length ? `\n${e("warn")} Не влезло эмодзи: ${errors.length}` : "";
-    const text =
-      `${e("check")} <b>Пак готов!</b>\n` +
-      `${e("doc")} <b>${escapeHtml(pack.title)}</b> · ${pack.count} шт.\n${pack.link}${warn}`;
-    if (progress) {
-      await progress.done(text, packObj ? packKeyboard(packObj) : undefined);
-    } else if (config.botToken) {
-      await tg
-        .sendMessage(config.botToken, userId, text, packObj ? { reply_markup: packKeyboard(packObj) } : {})
-        .catch(() => {});
+      kind: "build",
+      label: job.title || "пак",
+      onPosition: (pos) => (progress ? progress.queued(pos) : undefined),
+    },
+    async () => {
+      if (!progress) progress = await startProgress(userId, title);
+      else await progress.begin();
+      try {
+        const { pack, errors } = await build.createPack({
+          ...job,
+          userId,
+          onProgress: progress ? (s, d, t) => progress.update(s, d, t) : undefined,
+        });
+        // Списываем только за реально созданные эмодзи.
+        if (pack.count > 0) db.debitStars(userId, starsNeeded(pack.count));
+        const packObj = db.getPack(pack.id);
+        const warn = errors && errors.length ? `\n${e("warn")} Не влезло эмодзи: ${errors.length}` : "";
+        const paid = pack.count > 0 ? `\nСписано: ${starsNeeded(pack.count)} ⭐ · баланс: ${db.getBalance(userId)} ⭐` : "";
+        const text =
+          `${e("check")} <b>Пак готов!</b>\n` +
+          `${e("doc")} <b>${escapeHtml(pack.title)}</b> · ${pack.count} шт.\n${pack.link}${warn}${paid}`;
+        if (progress) {
+          await progress.done(text, packObj ? packKeyboard(packObj) : undefined);
+        } else if (config.botToken) {
+          await tg
+            .sendMessage(config.botToken, userId, text, packObj ? { reply_markup: packKeyboard(packObj) } : {})
+            .catch(() => {});
+        }
+        if (packObj) await sendFirstSticker(userId, packObj);
+        return pack;
+      } catch (err) {
+        if (progress) await progress.fail(err);
+        throw err;
+      }
     }
-    if (packObj) await sendFirstSticker(userId, packObj);
-    return pack;
-  } catch (err) {
-    if (progress) await progress.fail(err);
-    throw err;
-  }
+  );
 }
 
 // Прислать первый стикер готового пака отдельным сообщением — чтобы пак был
@@ -299,25 +349,88 @@ function parseTileIds(text) {
 
 // ── Действия с паком из чата ─────────────────────────────────────────────────
 async function doAddTiles(userId, pack, tileIds, progressTitle) {
-  const progress = await startProgress(userId, progressTitle || `Добавляю в «${pack.title}»`);
-  try {
-    const { added, errors } = await build.addTiles(pack, tileIds, {}, progress
-      ? (s, d, t) => progress.update(s, d, t)
-      : undefined);
-    const fresh = db.getPack(pack.id) || pack;
-    const text =
-      `${e("check")} <b>Готово!</b> Добавил: ${added.length}` +
-      (errors.length ? `\n${e("warn")} Не получилось: ${errors.length}` : "") +
-      `\n${e("doc")} <b>${escapeHtml(fresh.title)}</b> · теперь ${fresh.included.length} шт.\n${fresh.link}`;
-    if (progress) await progress.done(text, packKeyboard(fresh));
-    else await tg.sendMessage(config.botToken, userId, text, { reply_markup: packKeyboard(fresh) });
-  } catch (err) {
-    if (progress) await progress.fail(err);
-    else throw err;
+  const title = progressTitle || `Добавляю в «${pack.title}»`;
+  const includedSet = new Set((pack.included || []).map(String));
+  const want = [...new Set((tileIds || []).map(String))].filter((id) => !includedSet.has(id)).length;
+  const balance = db.getBalance(userId);
+  if (balance < starsNeeded(want)) {
+    await tg.sendMessage(
+      config.botToken,
+      userId,
+      `${e("warn")} Не хватает ⭐: нужно ${starsNeeded(want)}, на балансе ${balance}.`,
+      { reply_markup: topupKeyboard() }
+    );
+    return;
   }
+  let progress = null;
+  const ahead = stickerQueue.ahead();
+  if (ahead > 0) progress = await startProgress(userId, title, ahead);
+  await stickerQueue.enqueue(
+    {
+      userId,
+      kind: "add",
+      label: pack.title || "пак",
+      onPosition: (pos) => (progress ? progress.queued(pos) : undefined),
+    },
+    async () => {
+      if (!progress) progress = await startProgress(userId, title);
+      else await progress.begin();
+      try {
+        const { added, errors } = await build.addTiles(pack, tileIds, {}, (s, d, t) =>
+          progress.update(s, d, t)
+        );
+        if (added.length) db.debitStars(userId, starsNeeded(added.length));
+        const fresh = db.getPack(pack.id) || pack;
+        const text =
+          `${e("check")} <b>Готово!</b> Добавил: ${added.length}` +
+          (errors.length ? `\n${e("warn")} Не получилось: ${errors.length}` : "") +
+          (added.length ? `\nСписано: ${starsNeeded(added.length)} ⭐ · баланс: ${db.getBalance(userId)} ⭐` : "") +
+          `\n${e("doc")} <b>${escapeHtml(fresh.title)}</b> · теперь ${fresh.included.length} шт.\n${fresh.link}`;
+        await progress.done(text, packKeyboard(fresh));
+      } catch (err) {
+        if (progress) await progress.fail(err);
+        else throw err;
+      }
+    }
+  );
 }
 
 async function handlePendingText(userId, pending, text) {
+  if (pending.action === "topup_amount") {
+    const amount = parseInt(text.replace(/\D+/g, ""), 10);
+    if (!Number.isFinite(amount) || amount < 1 || amount > 500) {
+      await tg.sendMessage(
+        config.botToken,
+        userId,
+        `${e("excl")} Нужно число от 1 до 500. Сколько звёзд пополняем? (или /cancel)`
+      );
+      return true;
+    }
+    db.clearPending(userId);
+    await sendTopupInvoice(userId, amount);
+    return true;
+  }
+  if (pending.action === "mailing_text") {
+    const body = String(text || "").trim();
+    if (!body) return false;
+    db.setPending(userId, "mailing_confirm", null, 10 * 60 * 1000, body);
+    await tg.sendMessage(
+      config.botToken,
+      userId,
+      `${e("doc")} <b>Предпросмотр рассылки</b> (${db.usersCount()} получателей):\n\n${escapeHtml(body)}`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "📤 Отправить всем", callback_data: "adm:mail:send" },
+              { text: "Отмена", callback_data: "adm:mail:cancel" },
+            ],
+          ],
+        },
+      }
+    );
+    return true;
+  }
   const pack = db.getPackForUser(pending.pack_id, userId);
   if (!pack) {
     db.clearPending(userId);
@@ -429,10 +542,210 @@ async function acceptUpload(userId, fileId) {
   }
 }
 
+// ── Баланс, оплата Stars, статистика, рассылка ───────────────────────────────
+function isAdmin(userId) {
+  return (config.adminIds || []).includes(Number(userId));
+}
+
+function topupKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "⭐ 10", callback_data: "pay:10" },
+        { text: "⭐ 25", callback_data: "pay:25" },
+        { text: "⭐ 50", callback_data: "pay:50" },
+      ],
+      [
+        { text: "⭐ 100", callback_data: "pay:100" },
+        { text: "⭐ 250", callback_data: "pay:250" },
+        { text: "⭐ 500", callback_data: "pay:500" },
+      ],
+      [{ text: "✏️ Своя сумма (1–500)", callback_data: "pay:custom" }],
+    ],
+  };
+}
+
+async function sendBalance(userId) {
+  const u = db.getUser(userId);
+  await tg.sendMessage(
+    config.botToken,
+    userId,
+    `${e("control")} <b>Твой баланс:</b> ${db.getBalance(userId)} ⭐\n` +
+      `1 стикер/эмодзи = ${config.starPerSticker || 1} ⭐\n` +
+      `Сделано паков: ${(u && u.packs_made) || 0} · стикеров: ${(u && u.stickers_made) || 0}\n\nПополнить?`,
+    { reply_markup: topupKeyboard() }
+  );
+}
+
+async function sendTopupInvoice(userId, amount) {
+  const sum = Math.floor(Number(amount));
+  if (!Number.isFinite(sum) || sum < 1 || sum > 500) {
+    await tg.sendMessage(config.botToken, userId, `${e("excl")} Сумма — от 1 до 500 ⭐.`);
+    return;
+  }
+  const payload = `topup:${userId}:${sum}:${Date.now().toString(36)}`;
+  await tg.tgApi(config.botToken, "sendInvoice", {
+    chat_id: userId,
+    title: "Пополнение баланса",
+    description: `${sum} Telegram Stars = ${sum} стикеров/эмодзи в редакторе`,
+    payload,
+    currency: "XTR",
+    prices: [{ label: `${sum} Telegram Stars`, amount: sum }],
+  });
+}
+
+async function handlePreCheckout(pq) {
+  const payload = String((pq && pq.invoice_payload) || "");
+  const parts = payload.split(":");
+  const ok =
+    parts[0] === "topup" &&
+    Number(parts[1]) === (pq.from && pq.from.id) &&
+    pq.currency === "XTR" &&
+    Number.isFinite(Number(pq.total_amount)) &&
+    Number(pq.total_amount) >= 1 &&
+    Number(pq.total_amount) <= 500 &&
+    Number(parts[2]) === Number(pq.total_amount);
+  try {
+    await tg.tgApi(config.botToken, "answerPreCheckoutQuery", {
+      pre_checkout_query_id: pq.id,
+      ok,
+      ...(ok ? {} : { error_message: "Что-то не так с суммой. Попробуй ещё раз через /topup" }),
+    });
+  } catch (err) {
+    console.warn("[bot] preCheckout failed:", err.message);
+  }
+}
+
+async function handleSuccessfulPayment(msg) {
+  const userId = msg.from.id;
+  const sp = msg.successful_payment || {};
+  if (sp.currency !== "XTR") return;
+  const credited = db.creditStars(
+    userId,
+    Number(sp.total_amount) || 0,
+    sp.telegram_payment_charge_id || "",
+    sp.invoice_payload || ""
+  );
+  await tg.sendMessage(
+    config.botToken,
+    userId,
+    credited
+      ? `${e("check")} <b>Баланс пополнен на ${sp.total_amount} ⭐!</b>\nТеперь у тебя ${db.getBalance(userId)} ⭐. Открывай редактор и собирай пак.`
+      : `${e("check2")} Оплата уже была зачислена раньше. Баланс: ${db.getBalance(userId)} ⭐`,
+    { reply_markup: webAppKeyboard() }
+  );
+}
+
+async function sendStats(userId) {
+  if (!isAdmin(userId)) {
+    await tg.sendMessage(
+      config.botToken,
+      userId,
+      `${e("shield")} Команда для админа.\nТвой ID: <code>${userId}</code> — добавь его в ADMIN_IDS (.env) и перезапусти сервер.`
+    );
+    return;
+  }
+  const q = stickerQueue.stats();
+  const nowLine = q.active
+    ? `Сейчас собирает: ${escapeHtml(q.active.label || "пак")} (юзер ${q.active.user_id})` +
+      (q.waiting.length ? `\nВ очереди: ${q.waiting.length}` : "")
+    : q.waiting.length
+      ? `В очереди: ${q.waiting.length}`
+      : "Сейчас никто не собирает";
+  await tg.sendMessage(
+    config.botToken,
+    userId,
+    `${e("control")} <b>Статистика бота</b>\n\n` +
+      `${e("timer")} ${nowLine}\n` +
+      `${e("doc")} Сделано паков: ${db.statsGet("packs_created")}\n` +
+      `${e("check")} Сделано стикеров/эмодзи: ${db.statsGet("stickers_created")}\n` +
+      `Пользователей: ${db.usersCount()}\n` +
+      `Пополнено всего: ${db.totalTopupStars()} ⭐`
+  );
+}
+
+async function startMailing(userId) {
+  if (!isAdmin(userId)) {
+    await tg.sendMessage(
+      config.botToken,
+      userId,
+      `${e("shield")} Команда для админа.\nТвой ID: <code>${userId}</code> — добавь его в ADMIN_IDS (.env) и перезапусти сервер.`
+    );
+    return;
+  }
+  db.setPending(userId, "mailing_text", null);
+  await tg.sendMessage(
+    config.botToken,
+    userId,
+    `${e("outbox")} Пришли текст рассылки следующим сообщением. Покажу предпросмотр перед отправкой (или /cancel).`
+  );
+}
+
+async function runMailing(adminId, text) {
+  const ids = db.listUserIds();
+  let sent = 0;
+  let failed = 0;
+  for (const id of ids) {
+    try {
+      await tg.tgApi(config.botToken, "sendMessage", {
+        chat_id: id,
+        text,
+        disable_web_page_preview: true,
+      });
+      sent++;
+    } catch (_) {
+      failed++;
+    }
+    // Не упираемся в лимиты Telegram на массовую отправку.
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  await tg
+    .sendMessage(
+      config.botToken,
+      adminId,
+      `${e("outbox")} <b>Рассылка завершена</b>\nОтправлено: ${sent} · не дошло: ${failed} (заблокировали бота и т.п.)`
+    )
+    .catch(() => {});
+}
+
 // ── Колбэки управления паками ────────────────────────────────────────────────
 async function handleCallback(cq) {
   const userId = cq.from.id;
+  db.touchUser(cq.from || {});
   const data = String(cq.data || "");
+  if (data.startsWith("pay:")) {
+    await tg.answerCallbackQuery(config.botToken, cq.id).catch(() => {});
+    const val = data.slice(4);
+    if (val === "custom") {
+      db.setPending(userId, "topup_amount", null);
+      await tg.sendMessage(
+        config.botToken,
+        userId,
+        `${e("pencil")} Сколько звёзд пополняем? Пришли число от 1 до 500 (или /cancel).`
+      );
+    } else {
+      await sendTopupInvoice(userId, parseInt(val, 10));
+    }
+    return;
+  }
+  if (data === "adm:mail:send" || data === "adm:mail:cancel") {
+    await tg.answerCallbackQuery(config.botToken, cq.id).catch(() => {});
+    const pending = db.getPending(userId);
+    const body = pending && pending.action === "mailing_confirm" ? pending.payload || "" : "";
+    db.clearPending(userId);
+    if (data === "adm:mail:cancel" || !body) {
+      await tg.sendMessage(config.botToken, userId, `${e("check2")} Рассылка отменена.`);
+      return;
+    }
+    if (!isAdmin(userId)) return;
+    await tg.sendMessage(
+      config.botToken,
+      userId,
+      `${e("timer")} Рассылка запущена для ${db.usersCount()} пользователей…`
+    );
+    setImmediate(() => runMailing(userId, body));
+    return;
+  }
   const m = data.match(/^pk:(\d+):(\w+)$/);
   if (!m) return;
   const pack = db.getPackForUser(Number(m[1]), userId);
@@ -477,8 +790,19 @@ async function handleCallback(cq) {
   } else if (action === "conv") {
     const progress = await startProgress(userId, `Конвертирую «${pack.title}»`);
     try {
+      const need = starsNeeded((pack.included || []).length);
+      if (db.getBalance(userId) < need) {
+        if (progress) {
+          await progress.done(
+            `${e("warn")} Не хватает ⭐ на конвертацию: нужно ${need}, на балансе ${db.getBalance(userId)}.`,
+            topupKeyboard()
+          );
+        }
+        return;
+      }
       const r = await build.convertPack(pack, userId);
-      const text = `${e("repeat")} <b>Конвертация готова!</b>\nНовый формат: ${r.format === "sticker" ? "стикеры" : "эмодзи"}${r.parts > 1 ? `, паков: ${r.parts}` : ""}. Ссылки — в списке /packs`;
+      db.debitStars(userId, need);
+      const text = `${e("repeat")} <b>Конвертация готова!</b>\nНовый формат: ${r.format === "sticker" ? "стикеры" : "эмодзи"}${r.parts > 1 ? `, паков: ${r.parts}` : ""}. Списано ${need} ⭐. Ссылки — в списке /packs`;
       if (progress) await progress.done(text);
       else await tg.sendMessage(config.botToken, userId, text);
     } catch (err) {
@@ -513,6 +837,10 @@ async function handleCallback(cq) {
 
 // ── Главный обработчик апдейтов ──────────────────────────────────────────────
 async function handleMainUpdate(update) {
+  if (update && update.pre_checkout_query) {
+    await handlePreCheckout(update.pre_checkout_query);
+    return;
+  }
   if (update && update.callback_query) {
     try {
       await handleCallback(update.callback_query);
@@ -530,6 +858,11 @@ async function handleMainUpdate(update) {
   const msg = update && update.message;
   if (!msg || !msg.from) return;
   const userId = msg.from.id;
+  db.touchUser(msg.from);
+  if (msg.successful_payment) {
+    await handleSuccessfulPayment(msg);
+    return;
+  }
   const text = typeof msg.text === "string" ? msg.text.trim() : "";
 
   if (text === "/cancel") {
@@ -574,13 +907,34 @@ async function handleMainUpdate(update) {
         `${e("right")} Открываешь редактор и собираешь пак\n` +
         `${e("right")} Жмёшь «Создать пак» — сборка идёт прямо здесь, с прогрессом ${e("timer")}\n` +
         `${e("right")} Готовый пак можно изменить, дополнить или удалить — /packs ${e("control")}\n\n` +
-        `Всё бесплатно ${e("clap")}`,
+        `Цена: 1 стикер = 1 ⭐. Баланс и пополнение — /balance и /topup ${e("clap")}`,
       { reply_markup: webAppKeyboard() }
     );
     return;
   }
   if (text.startsWith("/packs")) {
     await sendPacksList(userId);
+    return;
+  }
+  if (text.startsWith("/balance")) {
+    await sendBalance(userId);
+    return;
+  }
+  if (text.startsWith("/topup")) {
+    await tg.sendMessage(
+      config.botToken,
+      userId,
+      `${e("down")} <b>Пополнение баланса</b>\n1 стикер/эмодзи = 1 ⭐. Выбери сумму:`,
+      { reply_markup: topupKeyboard() }
+    );
+    return;
+  }
+  if (text.startsWith("/stats")) {
+    await sendStats(userId);
+    return;
+  }
+  if (text.startsWith("/mailing")) {
+    await startMailing(userId);
     return;
   }
 
