@@ -99,6 +99,24 @@ async function sendMessage(token, chatId, text, extra = {}) {
 }
 
 // ── Стикер-паки ──────────────────────────────────────────────────────────────
+async function editMessageText(token, chatId, messageId, text, extra = {}) {
+  return tgApi(token, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...extra,
+  });
+}
+
+async function answerCallbackQuery(token, callbackQueryId, text) {
+  return tgApi(token, "answerCallbackQuery", {
+    callback_query_id: callbackQueryId,
+    ...(text ? { text } : {}),
+  });
+}
+
 async function uploadStickerFile(token, userId, tgsBuffer) {
   const res = await tgApi(
     token,
@@ -145,6 +163,8 @@ module.exports = {
   getMe,
   setBotWebhook,
   sendMessage,
+  editMessageText,
+  answerCallbackQuery,
   uploadStickerFile,
   createStickerSet,
   addSticker,

@@ -80,7 +80,7 @@
     textScope:   "global",
     format:      "emoji",
     selected:    new Set(),   // tiles that go into the built pack
-    pricing:     { small_price_rub: 55, mid_price_rub: 100, full_price_rub: 250, passport_price_rub: 25, conversion_price_rub: 25, icon_pack_price_rub: 50, icon_addition_price_rub: 2, small_threshold: 10, mid_threshold: 50, passport_ids: [] },
+    pricing:     { small_price_rub: 0, mid_price_rub: 0, full_price_rub: 0, passport_price_rub: 0, conversion_price_rub: 0, icon_pack_price_rub: 0, icon_addition_price_rub: 0, addition_price_rub: 0, small_threshold: 10, mid_threshold: 50, passport_ids: [] },
     fonts:       FALLBACK_FONTS.slice(),
     fontFallbacks: [],
     cacheInflight: {},
@@ -2722,10 +2722,10 @@
     /** Mirror of services/billing.Billing.quote_pack_price_rub for the live
      *  CTA price tag. Server is the source of truth — this is for UX. */
     const p = state.pricing || {};
-    const small = +p.small_price_rub || 55;
-    const mid = +p.mid_price_rub || 100;
-    const full = +p.full_price_rub || 250;
-    const passport = +p.passport_price_rub || 25;
+    const small = Number.isFinite(+p.small_price_rub) ? +p.small_price_rub : 0;
+    const mid = Number.isFinite(+p.mid_price_rub) ? +p.mid_price_rub : 0;
+    const full = Number.isFinite(+p.full_price_rub) ? +p.full_price_rub : 0;
+    const passport = Number.isFinite(+p.passport_price_rub) ? +p.passport_price_rub : 0;
     const smallThreshold = +p.small_threshold || 10;
     const midThreshold = +p.mid_threshold || 50;
     let count = 0, hasPassport = false;
@@ -2777,11 +2777,11 @@
     }
     const rub = computePriceRub();
     const priceEl = document.getElementById("pack-price");
-    if (priceEl) priceEl.textContent = rub > 0 ? rub + " ₽" : "—";
+    if (priceEl) priceEl.textContent = rub > 0 ? rub + " ₽" : (n > 0 ? "бесплатно" : "—");
     const genBtn = document.getElementById("generate");
     if (genBtn) {
       genBtn.textContent = rub > 0 ? `Создать пак · ${rub} ₽` : "Создать пак";
-      genBtn.disabled = buildInFlight || over || rub <= 0;
+      genBtn.disabled = buildInFlight || over || n === 0;
     }
     // Passport toggle card state
     const passportToggle = document.getElementById("passport-toggle");
@@ -4927,7 +4927,7 @@
         updatePackBotButton();
         return;
       }
-      setStatus("Сборка запущена! Закрываю…");
+      setStatus("Перейдите к боту — сборка и прогресс там");
       setTimeout(() => tg?.close?.(), 800);
     } catch (e) {
       setStatus("Сеть: " + e.message);
@@ -5374,7 +5374,7 @@
   }
 
   function iconPackPrice() {
-    return (state.pricing && (state.pricing.icon_addition_price_rub || state.pricing.addition_price_rub)) || 2;
+    const _iap = state.pricing ? (state.pricing.icon_addition_price_rub ?? state.pricing.addition_price_rub) : 0; return Number(_iap) || 0;
   }
 
   function setIconsFrameSrc(src) {
@@ -5717,7 +5717,7 @@
     wrap.classList.toggle("hidden", slack <= 0);
     btn.disabled = slack <= 0;
     btn.textContent = slack > 0
-      ? `Добавить иконки · ${iconPackPrice()}₽/шт`
+      ? (iconPackPrice() > 0 ? `Добавить иконки · ${iconPackPrice()}₽/шт` : "Добавить иконки")
       : "Пак заполнен";
   }
 
@@ -5813,15 +5813,15 @@
     const sub = $("pd-convert-sub");
     if (!btn || !title || !sub) return;
     const target = conversionTargetFormat(pack);
-    const price = (state.pricing && state.pricing.conversion_price_rub) || 25;
+    const price = +(state.pricing && state.pricing.conversion_price_rub) || 0;
     const count = packIncludedCount(pack);
     const parts = target === "sticker" ? Math.max(1, Math.ceil(count / STICKER_LIMIT)) : 1;
     title.textContent = target === "sticker"
       ? "Сделать стикеры"
       : "Сделать эмодзи";
     sub.textContent = target === "sticker" && parts > 1
-      ? `${price}₽ · ${parts} пака`
-      : `${price}₽ · ссылка в бота`;
+      ? (price > 0 ? `${price}₽ · ${parts} пака` : "бесплатно")
+      : (price > 0 ? `${price}₽ · ссылка в бота` : "бесплатно · ссылка придёт в бота");
     btn.disabled = !pack;
   }
 
@@ -5830,7 +5830,7 @@
     if (!pack) return;
     const btn = $("pd-convert");
     const target = conversionTargetFormat(pack);
-    const price = (state.pricing && state.pricing.conversion_price_rub) || 25;
+    const price = +(state.pricing && state.pricing.conversion_price_rub) || 0;
     const targetLabel = target === "sticker" ? "стикер-пак" : "эмодзи-пак";
     const count = packIncludedCount(pack);
     const parts = target === "sticker"
@@ -5843,7 +5843,7 @@
         || packsState.convertConfirm.until < now) {
       packsState.convertConfirm = { key: confirmKey, until: now + 4500 };
       const label = parts > 1 ? `${parts} стикер-пака` : targetLabel;
-      setPdConvertStatus(`Ещё раз нажми: ${label} за ${price}₽`, "ok");
+      setPdConvertStatus(price > 0 ? `Ещё раз нажми: ${label} за ${price}₽` : `Ещё раз нажми: ${label} (бесплатно)`, "ok");
       try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (_) {}
       return;
     }
@@ -5876,14 +5876,14 @@
     const wrap = $("pd-add-wrap");
     const n = packsState.staged.size;
     cnt.textContent = n;
-    const perEmoji = (state.pricing && state.pricing.addition_price_rub) || 2;
+    const perEmoji = +(state.pricing && state.pricing.addition_price_rub) || 0;
     const rub = n * perEmoji;
-    cost.textContent = rub + "₽";
+    cost.textContent = rub > 0 ? rub + "₽" : "бесплатно";
     chip.classList.toggle("hidden", n === 0);
     btn.disabled = n === 0;
     btn.textContent = n === 0
       ? "Добавить эмодзи"
-      : `Добавить ${n} эмодзи · ${rub}₽`;
+      : (rub > 0 ? `Добавить ${n} эмодзи · ${rub}₽` : `Добавить ${n} эмодзи`);
     // Sticky CTA: show only when there's something staged AND user isn't
     // inside the per-tile mini-editor (which has its own sticky CTA).
     if (wrap) {

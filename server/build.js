@@ -95,7 +95,7 @@ function effectiveOverride(id, global, perTile) {
 }
 
 async function resolveBot(userId) {
-  const own = db.state.packBots[String(userId)];
+  const own = db.getPackBot(userId);
   if (own && own.token) {
     return {
       token: own.token,
@@ -172,7 +172,7 @@ function serializePack(pack) {
   };
 }
 
-async function createPack({ userId, title, format, ids, global, perEmoji }) {
+async function createPack({ userId, title, format, ids, global, perEmoji, onProgress }) {
   const bot = await resolveBot(userId);
   if (!bot) {
     const e = new Error("pack bot not configured");
@@ -188,16 +188,20 @@ async function createPack({ userId, title, format, ids, global, perEmoji }) {
   const cap = format === "sticker" ? STICKER_LIMIT : EMOJI_LIMIT;
   const chosen = ids.slice(0, cap);
   const errors = [];
-  const rendered = await renderTiles(chosen, global, perEmoji, errors);
+  const rendered = await renderTiles(chosen, global, perEmoji, errors, onProgress);
   if (!rendered.length) {
     throw new Error(errors[0]?.error || "Не удалось отрендерить ни одного эмодзи");
   }
   const name = packName(title, userId, bot.username);
   const tgTitle = `${String(title || "Pack").slice(0, 40)} by @${config.publicPackBotUsername}`;
   const fileIds = [];
+  let uploaded = 0;
   for (const r of rendered) {
     fileIds.push(await tg.uploadStickerFile(bot.token, bot.ownerId, r.tgs));
+    uploaded++;
+    if (onProgress) await onProgress("upload", uploaded, rendered.length);
   }
+  if (onProgress) await onProgress("create", rendered.length, rendered.length);
   await tg.createStickerSet(bot.token, {
     userId: bot.ownerId,
     name,
@@ -208,7 +212,6 @@ async function createPack({ userId, title, format, ids, global, perEmoji }) {
   const link =
     format === "sticker" ? `https://t.me/addstickers/${name}` : `https://t.me/addemoji/${name}`;
   const pack = {
-    id: db.nextId("pack"),
     user_id: Number(userId),
     title: String(title || "Pack").slice(0, 40),
     short_name: name,
@@ -220,9 +223,10 @@ async function createPack({ userId, title, format, ids, global, perEmoji }) {
     bot_source: bot.source,
     created_at: new Date().toISOString(),
   };
-  db.state.packs.push(pack);
-  db.save();
-  notify(bot, userId, `Пак готов: ${link}`).catch(() => {});
+  db.insertPack(pack);
+  // Если сборку ведёт бот с прогрессом (onProgress), финальное сообщение он
+  // покажет сам — не дублируем отдельным уведомлением.
+  if (!onProgress) notify(bot, userId, `Пак готов: ${link}`).catch(() => {});
   return { pack: serializePack(pack), errors };
 }
 
@@ -239,7 +243,7 @@ async function notify(bot, userId, text) {
 
 async function botForPack(pack) {
   if (pack.bot_source === "user") {
-    const own = db.state.packBots[String(pack.user_id)];
+    const own = db.getPackBot(pack.user_id);
     if (own && own.token) {
       return { token: own.token, username: own.bot_username, ownerId: Number(own.owner_user_id) || pack.user_id };
     }
@@ -250,12 +254,12 @@ async function botForPack(pack) {
   return { token: config.botToken, username: me.username, ownerId: pack.user_id };
 }
 
-async function addTiles(pack, tileIds, overrides) {
+async function addTiles(pack, tileIds, overrides, onProgress) {
   const bot = await botForPack(pack);
   const perEmoji = { ...(pack.per_emoji || {}) };
   for (const [k, v] of Object.entries(overrides || {})) perEmoji[String(k)] = v;
   const errors = [];
-  const rendered = await renderTiles(tileIds, pack.global, perEmoji, errors);
+  const rendered = await renderTiles(tileIds, pack.global, perEmoji, errors, onProgress);
   const added = [];
   for (const r of rendered) {
     try {
@@ -268,7 +272,7 @@ async function addTiles(pack, tileIds, overrides) {
       errors.push({ id: String(r.id), error: String((e && e.message) || e) });
     }
   }
-  db.save();
+  db.updatePack(pack);
   return { added, errors };
 }
 
@@ -283,7 +287,7 @@ async function renamePack(pack, title) {
     console.warn("[packs] setStickerSetTitle failed:", e.message);
   }
   pack.title = title;
-  db.save();
+  db.updatePack(pack);
   return pack;
 }
 
@@ -307,15 +311,46 @@ async function convertPack(pack, userId) {
   return { parts, format: target };
 }
 
+// Убрать эмодзи из пака по позициям (1-based, как в списке included).
+async function removeTiles(pack, positions) {
+  const bot = await botForPack(pack);
+  const set = await tg.tgApi(bot.token, "getStickerSet", { name: pack.short_name });
+  const stickers = (set && set.stickers) || [];
+  const targets = [...new Set(positions)]
+    .filter((n) => n >= 1 && n <= pack.included.length)
+    .sort((a, b) => b - a);
+  const removed = [];
+  for (const pos of targets) {
+    const sticker = stickers[pos - 1];
+    if (!sticker) continue;
+    await tg.tgApi(bot.token, "deleteStickerFromSet", { sticker_file_id: sticker.file_id });
+    removed.push(pack.included[pos - 1]);
+    pack.included.splice(pos - 1, 1);
+  }
+  db.updatePack(pack);
+  return removed;
+}
+
+// Удалить пак целиком (в Telegram и у нас).
+async function deletePack(pack) {
+  const bot = await botForPack(pack);
+  await tg.tgApi(bot.token, "deleteStickerSet", { name: pack.short_name });
+  db.deletePack(pack.id);
+}
+
 module.exports = {
   STICKER_LIMIT,
   EMOJI_LIMIT,
   slugify,
   effectiveOverride,
   resolveBot,
+  botForPack,
+  notify,
   serializePack,
   createPack,
   addTiles,
+  removeTiles,
+  deletePack,
   renamePack,
   convertPack,
 };

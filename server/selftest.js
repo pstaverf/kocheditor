@@ -6,6 +6,9 @@ const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 
+process.env.DATA_DIR = process.env.DATA_DIR || require("os").tmpdir() + "/kocheditor-selftest-" + process.pid;
+process.env.BOT_TOKEN = "111:fake-test-token";
+process.env.PUBLIC_URL = "https://example.test";
 const ROOT = path.resolve(__dirname, "..");
 const PORT = 18000 + Math.floor(Math.random() * 900);
 
@@ -26,6 +29,90 @@ function assert(cond, msg) {
 }
 
 (async () => {
+  // 0) Бот: фейковый Telegram API, весь цикл управления паком.
+  {
+    const calls = [];
+    const sets = new Map();
+    let msgSeq = 100;
+    const realFetch = global.fetch;
+    global.fetch = async (url, opts = {}) => {
+      const u = String(url);
+      const m = u.match(/api\.telegram\.org\/bot[^/]+\/(\w+)$/);
+      assert(m, "бот ходит только в Telegram API: " + u);
+      const method = m[1];
+      let params = {};
+      try { params = JSON.parse(opts.body || "{}"); } catch (_) {}
+      calls.push({ method, params });
+      const ok = (result) => ({ ok: true, status: 200, json: async () => ({ ok: true, result }) });
+      switch (method) {
+        case "getMe": return ok({ id: 1, username: "mainbot", first_name: "Main" });
+        case "sendMessage": return ok({ message_id: ++msgSeq, chat: { id: params.chat_id } });
+        case "editMessageText": return ok(true);
+        case "answerCallbackQuery": return ok(true);
+        case "uploadStickerFile": return ok({ file_id: "file" + Math.floor(Math.random() * 1e9) });
+        case "createNewStickerSet":
+          sets.set(params.name, params.stickers.map((s) => s.sticker));
+          return ok(true);
+        case "addStickerToSet":
+          sets.get(params.name).push(params.sticker.sticker);
+          return ok(true);
+        case "getStickerSet":
+          return ok({ name: params.name, stickers: (sets.get(params.name) || []).map((f) => ({ file_id: f })) });
+        case "deleteStickerFromSet": {
+          const arr = sets.get([...sets.keys()][0]) || [];
+          const ix = arr.indexOf(params.sticker_file_id);
+          if (ix >= 0) arr.splice(ix, 1);
+          return ok(true);
+        }
+        case "setStickerSetTitle": return ok(true);
+        case "deleteStickerSet": sets.delete(params.name); return ok(true);
+        default: return ok(true);
+      }
+    };
+    try {
+      const bot = require("./bot");
+      require("./catalog").scan();
+      const db = require("./db");
+      db.open();
+      const userId = 4242;
+      const msg = (text) => ({ update_id: 1, message: { message_id: 1, from: { id: userId }, chat: { id: userId }, text } });
+      const cb = (data) => ({ update_id: 2, callback_query: { id: "q1", from: { id: userId }, data } });
+
+      await bot.handleMainUpdate(msg("/start"));
+      const startText = calls.find((c) => c.method === "sendMessage").params.text;
+      assert(startText.includes('tg-emoji emoji-id="5339517760592421605"'), "бот: /start с кастомным эмодзи");
+
+      const pack = await bot.runBuildWithProgress(userId, {
+        title: "Тестовый", format: "emoji", ids: [3],
+        global: { kind: "text", text: "HELLO", font: "russo" }, perEmoji: {},
+      });
+      assert(pack && pack.id > 0, "бот: сборка пака с прогрессом");
+      assert(calls.some((c) => c.method === "createNewStickerSet"), "бот: createNewStickerSet вызван");
+      assert(calls.filter((c) => c.method === "editMessageText").length >= 2, "бот: прогресс редактировал сообщение");
+      const doneText = calls.filter((c) => c.method === "editMessageText").pop().params.text;
+      assert(doneText.includes("Пак готов") && doneText.includes("tg-emoji"), "бот: финал с кастомным эмодзи");
+
+      await bot.handleMainUpdate(cb(`pk:${pack.id}:rename`));
+      assert(db.getPending(userId).action === "rename", "бот: rename ждёт текст");
+      await bot.handleMainUpdate(msg("Новое имя"));
+      assert(db.getPack(pack.id).title === "Новое имя", "бот: пак переименован");
+
+      await bot.handleMainUpdate(cb(`pk:${pack.id}:add`));
+      await bot.handleMainUpdate(msg("1"));
+      assert(db.getPack(pack.id).included.length === 2, "бот: эмодзи добавлен по номеру");
+
+      await bot.handleMainUpdate(cb(`pk:${pack.id}:remove`));
+      await bot.handleMainUpdate(msg("2"));
+      assert(db.getPack(pack.id).included.length === 1, "бот: эмодзи убран по позиции");
+
+      await bot.handleMainUpdate(cb(`pk:${pack.id}:delyes`));
+      assert(db.listPacks(userId).length === 0, "бот: пак удалён");
+      assert(calls.some((c) => c.method === "deleteStickerSet"), "бот: deleteStickerSet вызван");
+    } finally {
+      global.fetch = realFetch;
+    }
+  }
+
   // 1) Рендер настоящим replacer'ом.
   const render = require("./render");
   const buf = fs.readFileSync(path.join(ROOT, "emoji/master_tgs/003_f09f8ead.tgs"));
@@ -69,7 +156,7 @@ function assert(cond, msg) {
     assert(fontRes.ok && (await fontRes.arrayBuffer()).byteLength > 10000, "шрифт отдаётся");
 
     const pricing = await (await fetch(base + "/api/pricing")).json();
-    assert(pricing.small_price_rub === 55 && Array.isArray(pricing.passport_ids), "pricing ок");
+    assert(pricing.small_price_rub === 0 && pricing.full_price_rub === 0 && Array.isArray(pricing.passport_ids), "pricing: всё бесплатно");
 
     const png1x1 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAwMCAO+ip1sAAAAASUVORK5CYII=";
@@ -112,6 +199,15 @@ function assert(cond, msg) {
   } finally {
     child.kill("SIGTERM");
   }
+  // SQLite: файл создан, CRUD работает.
+  const db = require("./db");
+  db.open();
+  assert(fs.existsSync(db.DB_FILE), "SQLite файл создан: " + db.DB_FILE);
+  const pk = db.insertPack({ user_id: 999, title: "Selftest", short_name: "st_by_bot", link: "", format: "emoji", included: ["3"], global: {}, per_emoji: {}, bot_source: "main" });
+  assert(pk.id > 0 && db.listPacks(999).length === 1, "SQLite packs insert/list");
+  db.deletePack(pk.id);
+  assert(db.listPacks(999).length === 0, "SQLite packs delete");
+
   console.log("\nSELFTEST PASSED");
 })().catch((e) => {
   console.error("\nSELFTEST FAILED:", e);

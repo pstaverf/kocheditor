@@ -4,7 +4,7 @@
   "private": true,
   "description": "Telegram Mini App: редактор кастомных эмодзи/стикеров + бот на вебхуке",
   "scripts": {
-    "start": "node server/index.js",
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
     "test": "node server/selftest.js"
   },
   "engines": {

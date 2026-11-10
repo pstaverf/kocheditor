@@ -95,8 +95,8 @@ function newList() {
 }
 
 function uploadList(userId) {
-  return Object.values(db.state.uploadItems)
-    .filter((u) => String(u.user_id) === String(userId))
+  return db
+    .listUploadItems(userId)
     .map((u) => ({ id: u.id, file: u.file, v: u.v }));
 }
 
@@ -106,7 +106,7 @@ function allFiles() {
 
 function resolvePath(id) {
   if (typeof id === "string" && id.startsWith("upload:")) {
-    const item = db.state.uploadItems[id];
+    const item = db.getUploadItem(id);
     return item ? path.join(UPLOAD_DIR, item.file) : null;
   }
   if (typeof id === "string" && id.startsWith("new:")) {

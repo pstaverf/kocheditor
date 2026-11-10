@@ -12,7 +12,7 @@ const render = require("./render");
 const build = require("./build");
 const bot = require("./bot");
 
-db.load();
+db.open();
 catalog.scan();
 
 const MIME = {
@@ -118,9 +118,7 @@ async function handleApi(req, res, url) {
     const user = authUser(req, res);
     if (!user) return;
     const name = safeName(m[1]);
-    const item = Object.values(db.state.uploadItems).find(
-      (u) => u.file === name && String(u.user_id) === String(user.id)
-    );
+    const item = name ? db.findUploadItem(user.id, name) : null;
     if (!item) return sendError(res, 404, "not found");
     return serveFile(res, path.join(catalog.UPLOAD_DIR, item.file), "private, max-age=3600");
   }
@@ -208,8 +206,7 @@ async function handleApi(req, res, url) {
       webhook_secret: secret,
       can_message_owner: false,
     };
-    db.state.packBots[String(user.id)] = rec;
-    db.save();
+    db.setPackBot(user.id, rec);
     // Свой вебхук персональному боту — чтобы ловить /start владельца.
     if (config.publicUrl) {
       tg.setBotWebhook(
@@ -226,11 +223,10 @@ async function handleApi(req, res, url) {
   if (p === "/api/pack_bot/delete" && method === "POST") {
     const user = authUser(req, res);
     if (!user) return;
-    const rec = db.state.packBots[String(user.id)];
+    const rec = db.getPackBot(user.id);
     if (rec) {
       tg.tgApi(rec.token, "deleteWebhook").catch(() => {});
-      delete db.state.packBots[String(user.id)];
-      db.save();
+      db.deletePackBot(user.id);
     }
     return sendJson(res, 200, { configured: false });
   }
@@ -238,33 +234,32 @@ async function handleApi(req, res, url) {
   if (p === "/api/pack_bot/status" && method === "GET") {
     const user = authUser(req, res);
     if (!user) return;
-    const rec = db.state.packBots[String(user.id)];
+    const rec = db.getPackBot(user.id);
     return sendJson(res, 200, rec ? packBotPayload(rec) : { configured: false });
   }
 
   if (p === "/api/uploads/start" && method === "POST") {
     const user = authUser(req, res);
     if (!user) return;
-    db.state.uploadSessions[String(user.id)] = {
+    db.setUploadSession(user.id, {
       status: "waiting",
       expires_at: Date.now() + 10 * 60 * 1000,
       upload_id: null,
       error: "",
-    };
-    db.save();
+    });
     return sendJson(res, 200, { ok: true, status: "waiting" });
   }
   if (p === "/api/uploads/status" && method === "GET") {
     const user = authUser(req, res);
     if (!user) return;
-    const s = db.state.uploadSessions[String(user.id)];
+    const s = db.getUploadSession(user.id);
     if (!s) return sendJson(res, 200, { status: "idle" });
     if (s.status === "waiting" && s.expires_at < Date.now()) {
       return sendJson(res, 200, { status: "expired", error: "Время вышло. Нажми «+» ещё раз." });
     }
     const out = { status: s.status, error: s.error || "" };
     if (s.status === "ready" && s.upload_id) {
-      const item = db.state.uploadItems[s.upload_id];
+      const item = db.getUploadItem(s.upload_id);
       if (item) out.upload = { id: item.id, file: item.file, v: item.v };
     }
     return sendJson(res, 200, out);
@@ -272,8 +267,7 @@ async function handleApi(req, res, url) {
   if (p === "/api/uploads/cancel" && method === "POST") {
     const user = authUser(req, res);
     if (!user) return;
-    delete db.state.uploadSessions[String(user.id)];
-    db.save();
+    db.deleteUploadSession(user.id);
     return sendJson(res, 200, { ok: true });
   }
   if (p === "/api/uploads/list" && method === "GET") {
@@ -311,27 +305,28 @@ async function handleApi(req, res, url) {
       global: body.global || {},
       perEmoji: body.per_emoji || {},
     };
-    // Сборка может занять десятки секунд (рендер + загрузки) — не держим запрос.
+    // Сборку ведёт бот: он пришлёт «Загружаю…» с прогрессом и карточку пака.
+    // Запрос не держим — фронт покажет «Перейдите к боту» и закроется.
     setImmediate(async () => {
       try {
-        const { pack, errors } = await build.createPack(job);
-        console.log(`[build] pack ${pack.short_name} for user ${user.id}, errors: ${errors.length}`);
+        const pack = await bot.runBuildWithProgress(user.id, job);
+        console.log(`[build] pack ${pack.short_name} for user ${user.id}`);
       } catch (e) {
         console.error("[build] failed for user", user.id, e.message);
-        if (config.botToken) {
-          tg.sendMessage(config.botToken, user.id, "Не удалось собрать пак: " + escapeMsg(e.message)).catch(() => {});
-        }
       }
     });
-    return sendJson(res, 200, { ok: true, queued: true });
+    return sendJson(res, 200, {
+      ok: true,
+      queued: true,
+      bot_username: botInfo.username || "",
+      go_to_bot: true,
+    });
   }
 
   if (p === "/api/packs/list" && method === "GET") {
     const user = authUser(req, res);
     if (!user) return;
-    const mine = db.state.packs
-      .filter((pk) => pk.user_id === Number(user.id))
-      .map(build.serializePack);
+    const mine = db.listPacks(user.id).map(build.serializePack);
     return sendJson(res, 200, mine);
   }
 
@@ -406,7 +401,7 @@ function packBotPayload(rec) {
 }
 
 function findOwnPack(user, id) {
-  return db.state.packs.find((pk) => pk.id === id && pk.user_id === Number(user.id)) || null;
+  return db.getPackForUser(id, user.id);
 }
 
 function escapeMsg(s) {
