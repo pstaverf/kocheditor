@@ -89,7 +89,13 @@ function serveFile(res, absPath, cacheControl) {
 }
 
 function safeName(raw) {
-  const name = path.basename(decodeURIComponent(raw || ""));
+  let decoded = String(raw || "");
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch (_) {
+    return null;
+  }
+  const name = path.basename(decoded);
   if (!name || name.includes("..")) return null;
   return name;
 }
@@ -114,7 +120,16 @@ async function handleApi(req, res, url) {
     if (!name) return sendError(res, 404, "not found");
     return serveFile(res, path.join(catalog.NEW_PREVIEW_DIR, name), "public, max-age=86400");
   }
-  if (method === "GET" && (m = p.match(/^\/api\/uploads\/([^/]+)$/))) {
+  if (method === "GET" && p === "/api/uploads/list") {
+    const user = authUser(req, res);
+    if (!user) return;
+    return sendJson(res, 200, catalog.uploadList(user.id));
+  }
+  if (
+    method === "GET" &&
+    (m = p.match(/^\/api\/uploads\/([^/]+)$/)) &&
+    !["list", "status", "start", "cancel"].includes(m[1])
+  ) {
     const user = authUser(req, res);
     if (!user) return;
     const name = safeName(m[1]);
@@ -148,6 +163,9 @@ async function handleApi(req, res, url) {
     ]);
   }
   if (method === "GET" && (m = p.match(/^\/api\/fonts\/([a-z0-9_-]+)$/i))) {
+    if (!render.FONTS.some((f) => f.key === m[1].toLowerCase())) {
+      return sendError(res, 404, "font not found");
+    }
     const fontPath = render.fontPath(m[1]);
     if (!fs.existsSync(fontPath)) return sendError(res, 404, "font not found");
     return serveFile(res, fontPath, "public, max-age=604800");
@@ -270,11 +288,6 @@ async function handleApi(req, res, url) {
     db.deleteUploadSession(user.id);
     return sendJson(res, 200, { ok: true });
   }
-  if (p === "/api/uploads/list" && method === "GET") {
-    const user = authUser(req, res);
-    if (!user) return;
-    return sendJson(res, 200, catalog.uploadList(user.id));
-  }
 
   if (p === "/api/build_pack" && method === "POST") {
     const user = authUser(req, res);
@@ -372,16 +385,21 @@ async function handleApi(req, res, url) {
     if (!user) return;
     const pack = findOwnPack(user, Number(m[1]));
     if (!pack) return sendError(res, 404, "Пак не найден");
-    try {
-      const r = await build.convertPack(pack, user.id);
-      return sendJson(res, 200, { ok: true, ...r });
-    } catch (e) {
-      if (e.needPackBot) return sendJson(res, 403, { need_pack_bot: true, error: e.message });
-      if (e.needPackBotStart) {
-        return sendJson(res, 403, { need_pack_bot_start: true, bot_username: e.botUsername, error: e.message });
+    const target = pack.format === "sticker" ? "emoji" : "sticker";
+    const cap = target === "sticker" ? build.STICKER_LIMIT : build.EMOJI_LIMIT;
+    const parts = Math.max(1, Math.ceil((pack.included || []).length / cap));
+    setImmediate(async () => {
+      try {
+        await build.convertPack(pack, user.id);
+        console.log(`[convert] pack ${pack.id} -> ${target} for user ${user.id}`);
+      } catch (e) {
+        console.error("[convert] failed for pack", pack.id, e.message);
+        if (config.botToken) {
+          tg.sendMessage(config.botToken, user.id, "Не удалось сконвертировать пак: " + e.message).catch(() => {});
+        }
       }
-      return sendError(res, 502, e.message);
-    }
+    });
+    return sendJson(res, 200, { ok: true, parts, format: target });
   }
 
   return sendError(res, 404, "unknown endpoint");
@@ -402,10 +420,6 @@ function packBotPayload(rec) {
 
 function findOwnPack(user, id) {
   return db.getPackForUser(id, user.id);
-}
-
-function escapeMsg(s) {
-  return String(s || "").replace(/[<>&]/g, "");
 }
 
 // ── Вебхуки ──────────────────────────────────────────────────────────────────

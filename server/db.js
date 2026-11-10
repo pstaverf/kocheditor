@@ -60,6 +60,7 @@ function open() {
       expires_at INTEGER NOT NULL DEFAULT 0
     );
   `);
+  fixUploadIds();
   return db;
 }
 
@@ -236,11 +237,13 @@ function findUploadItem(userId, file) {
   );
 }
 
-// upload_items.id стартует пустым до UPDATE выше — зададим колонке значение по умолчанию.
 function fixUploadIds() {
   open()
     .prepare("UPDATE upload_items SET id = 'upload:' || rowid WHERE id IS NULL OR id = ''")
     .run();
+}
+function deleteUploadItem(id) {
+  open().prepare("DELETE FROM upload_items WHERE id = ?").run(String(id));
 }
 
 // ── Ожидающие действия бота (rename/add/remove для конкретного пака) ─────────
@@ -288,6 +291,7 @@ module.exports = {
   listUploadItems,
   findUploadItem,
   fixUploadIds,
+  deleteUploadItem,
   setPending,
   getPending,
   clearPending,

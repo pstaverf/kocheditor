@@ -118,29 +118,34 @@ async function resolveBot(userId) {
   return null;
 }
 
-async function renderTiles(ids, global, perEmoji, errors) {
+async function renderTiles(ids, global, perEmoji, errors, onProgress) {
   const out = [];
+  let done = 0;
   for (const id of ids) {
     const buf = catalog.readTile(id);
     if (!buf) {
       errors.push({ id: String(id), error: "tile not found" });
-      continue;
+    } else {
+      try {
+        const ov = effectiveOverride(id, global, perEmoji);
+        const tgs = await render.renderTgs(buf, ov);
+        out.push({ id, tgs });
+      } catch (e) {
+        errors.push({ id: String(id), error: String((e && e.message) || e) });
+      }
     }
-    try {
-      const ov = effectiveOverride(id, global, perEmoji);
-      const tgs = await render.renderTgs(buf, ov);
-      out.push({ id, tgs });
-    } catch (e) {
-      errors.push({ id: String(id), error: String((e && e.message) || e) });
-    }
+    done++;
+    if (onProgress) await onProgress("render", done, ids.length);
   }
   return out;
 }
 
 function packName(title, userId, botUsername) {
   const rand = Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
-  const raw = `${slugify(title)}_${userId}_${rand}_by_${botUsername}`;
-  return raw.slice(0, 64);
+  const suffix = `_${userId}_${rand}_by_${botUsername}`;
+  let slug = slugify(title);
+  if (!/^[a-z]/.test(slug)) slug = "pack_" + slug; // имя набора обязано начинаться с буквы
+  return (slug.slice(0, Math.max(1, 64 - suffix.length)) + suffix).slice(0, 64);
 }
 
 function serializePack(pack) {
@@ -186,7 +191,15 @@ async function createPack({ userId, title, format, ids, global, perEmoji, onProg
     throw e;
   }
   const cap = format === "sticker" ? STICKER_LIMIT : EMOJI_LIMIT;
-  const chosen = ids.slice(0, cap);
+  const seenIds = new Set();
+  const chosen = ids
+    .filter((id) => {
+      const k = String(id);
+      if (seenIds.has(k)) return false;
+      seenIds.add(k);
+      return true;
+    })
+    .slice(0, cap);
   const errors = [];
   const rendered = await renderTiles(chosen, global, perEmoji, errors, onProgress);
   if (!rendered.length) {
@@ -259,7 +272,18 @@ async function addTiles(pack, tileIds, overrides, onProgress) {
   const perEmoji = { ...(pack.per_emoji || {}) };
   for (const [k, v] of Object.entries(overrides || {})) perEmoji[String(k)] = v;
   const errors = [];
-  const rendered = await renderTiles(tileIds, pack.global, perEmoji, errors, onProgress);
+  const cap = pack.format === "sticker" ? STICKER_LIMIT : EMOJI_LIMIT;
+  const includedSet = new Set((pack.included || []).map(String));
+  const seenAdd = new Set();
+  const queue = (tileIds || [])
+    .map(String)
+    .filter((id) => {
+      if (seenAdd.has(id) || includedSet.has(id)) return false;
+      seenAdd.add(id);
+      return true;
+    })
+    .slice(0, Math.max(0, cap - includedSet.size));
+  const rendered = await renderTiles(queue, pack.global, perEmoji, errors, onProgress);
   const added = [];
   for (const r of rendered) {
     try {
@@ -342,6 +366,7 @@ module.exports = {
   STICKER_LIMIT,
   EMOJI_LIMIT,
   slugify,
+  packName,
   effectiveOverride,
   resolveBot,
   botForPack,

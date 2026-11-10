@@ -91,6 +91,7 @@ function assert(cond, msg) {
       assert(calls.filter((c) => c.method === "editMessageText").length >= 2, "бот: прогресс редактировал сообщение");
       const doneText = calls.filter((c) => c.method === "editMessageText").pop().params.text;
       assert(doneText.includes("Пак готов") && doneText.includes("tg-emoji"), "бот: финал с кастомным эмодзи");
+      assert(calls.some((c) => c.method === "sendSticker"), "бот: первый стикер пака прислан в чат");
 
       await bot.handleMainUpdate(cb(`pk:${pack.id}:rename`));
       assert(db.getPending(userId).action === "rename", "бот: rename ждёт текст");
@@ -104,6 +105,10 @@ function assert(cond, msg) {
       await bot.handleMainUpdate(cb(`pk:${pack.id}:remove`));
       await bot.handleMainUpdate(msg("2"));
       assert(db.getPack(pack.id).included.length === 1, "бот: эмодзи убран по позиции");
+
+      await bot.handleMainUpdate(cb(`pk:${pack.id}:add`));
+      await bot.handleMainUpdate(msg("3"));
+      assert(db.getPack(pack.id).included.length === 1, "бот: повторное добавление без дублей");
 
       await bot.handleMainUpdate(cb(`pk:${pack.id}:delyes`));
       assert(db.listPacks(userId).length === 0, "бот: пак удалён");
@@ -126,6 +131,10 @@ function assert(cond, msg) {
     rotation: 0,
     font: "russo",
   });
+  const buildMod = require("./build");
+  const pn = buildMod.packName("123 тест", 42, "mainbot");
+  assert(/^[a-z]/.test(pn) && pn.endsWith("_by_mainbot") && pn.length <= 64, "packName: буква в начале, суффикс цел: " + pn);
+
   const json = JSON.parse(zlib.gunzipSync(tgs).toString("utf8"));
   assert(json && Array.isArray(json.layers), "renderTgs выдаёт валидный Lottie");
   assert(tgs.length > 1000, `renderTgs размер ${tgs.length}`);
@@ -168,6 +177,14 @@ function assert(cond, msg) {
     const prevData = await prev.json();
     assert(prev.ok && prevData.animation && prevData.animation.layers, "png_preview возвращает animation");
 
+    const upListRes = await fetch(base + "/api/uploads/list");
+    const upList = await upListRes.json();
+    assert(upListRes.ok && Array.isArray(upList), "uploads/list отвечает (не перехвачен роутом файла)");
+    const upStatus = await (await fetch(base + "/api/uploads/status")).json();
+    assert(upStatus.status === "idle", "uploads/status отвечает");
+    const bogusFont = await fetch(base + "/api/fonts/bogus");
+    assert(bogusFont.status === 404, "неизвестный шрифт -> 404");
+
     const packs = await (await fetch(base + "/api/packs/list")).json();
     assert(Array.isArray(packs) && packs.length === 0, "packs/list пуст без паков");
 
@@ -207,6 +224,39 @@ function assert(cond, msg) {
   assert(pk.id > 0 && db.listPacks(999).length === 1, "SQLite packs insert/list");
   db.deletePack(pk.id);
   assert(db.listPacks(999).length === 0, "SQLite packs delete");
+
+  // initData: свежесть подписи.
+  {
+    const crypto = require("crypto");
+    const TOKEN = "999:stale-test-token";
+    const sign = (params) => {
+      const check = Object.entries(params).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join("\n");
+      const secret = crypto.createHmac("sha256", "WebAppData").update(TOKEN).digest();
+      return crypto.createHmac("sha256", secret).update(check).digest("hex");
+    };
+    const child2 = spawn(process.execPath, ["server/index.js"], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(PORT + 1), BOT_TOKEN: TOKEN, PUBLIC_URL: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      const base2 = `http://127.0.0.1:${PORT + 1}`;
+      for (let i = 0; i < 40; i++) {
+        try { const r = await fetch(base2 + "/healthz"); if (r.ok) break; } catch (_) {}
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      const mk = (authDate) => {
+        const params = { auth_date: String(authDate), user: JSON.stringify({ id: 5, first_name: "T" }) };
+        return new URLSearchParams({ ...params, hash: sign(params) }).toString();
+      };
+      const fresh = await fetch(base2 + "/api/packs/list", { headers: { "X-Telegram-Init-Data": mk(Math.floor(Date.now() / 1000)) } });
+      assert(fresh.status === 200, "свежий initData принимается");
+      const stale = await fetch(base2 + "/api/packs/list", { headers: { "X-Telegram-Init-Data": mk(1700000000) } });
+      assert(stale.status === 401, "протухший initData отклоняется");
+    } finally {
+      child2.kill("SIGTERM");
+    }
+  }
 
   console.log("\nSELFTEST PASSED");
 })().catch((e) => {

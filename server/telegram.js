@@ -58,11 +58,14 @@ function validateInitData(initData, botToken) {
   const a = Buffer.from(computed, "hex");
   const b = Buffer.from(hash, "hex");
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  const authDate = +(params.get("auth_date") || 0);
+  // Подписанные, но протухшие initData не принимаем (защита от реплея).
+  if (!authDate || Date.now() / 1000 - authDate > 24 * 3600) return null;
   let user = null;
   try {
     user = JSON.parse(params.get("user") || "null");
   } catch (_) {}
-  return { user, authDate: +(params.get("auth_date") || 0) };
+  return { user, authDate };
 }
 
 // Небезопасный разбор user из initData — только для dev-режима без токена.

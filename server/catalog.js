@@ -28,11 +28,15 @@ function listDir(dir) {
 }
 
 function scan() {
-  masters = listDir(MASTER_DIR).map((file, i) => ({
-    id: i + 1,
-    file,
-    v: Math.floor(fs.statSync(path.join(MASTER_DIR, file)).mtimeMs / 1000),
-  }));
+  masters = listDir(MASTER_DIR).map((file, i) => {
+    const prefix = parseInt(file, 10);
+    return {
+      // id — номер из префикса файла (001_...), чтобы не съезжал при дырках.
+      id: Number.isFinite(prefix) && prefix > 0 ? prefix : i + 1,
+      file,
+      v: Math.floor(fs.statSync(path.join(MASTER_DIR, file)).mtimeMs / 1000),
+    };
+  });
   news = listDir(NEW_DIR).map((file, i) => {
     const preview = file.replace(/\.tgs$/i, ".png");
     const entry = {

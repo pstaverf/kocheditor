@@ -88,6 +88,9 @@ async function startProgress(userId, title) {
   }
   const messageId = msg.message_id;
   let lastText = "";
+  let lastStage = "";
+  let lastPct = -100;
+  let lastEditAt = 0;
   const edit = async (text, extra) => {
     if (text === lastText && !extra) return;
     lastText = text;
@@ -101,6 +104,14 @@ async function startProgress(userId, title) {
   };
   return {
     async update(stage, done, total) {
+      const pct = total > 0 ? Math.floor((done / total) * 100) : 100;
+      const now = Date.now();
+      const stageChanged = stage !== lastStage;
+      // Не чаще раза в 1.2 c и не на каждый процент — иначе флуд-контроль Telegram.
+      if (!stageChanged && done < total && pct - lastPct < 4 && now - lastEditAt < 1200) return;
+      lastStage = stage;
+      lastPct = pct;
+      lastEditAt = now;
       const label =
         stage === "render"
           ? "Рисую эмодзи"
@@ -141,10 +152,29 @@ async function runBuildWithProgress(userId, job) {
         .sendMessage(config.botToken, userId, text, packObj ? { reply_markup: packKeyboard(packObj) } : {})
         .catch(() => {});
     }
+    if (packObj) await sendFirstSticker(userId, packObj);
     return pack;
   } catch (err) {
     if (progress) await progress.fail(err);
     throw err;
+  }
+}
+
+// Прислать первый стикер готового пака отдельным сообщением — чтобы пак был
+// виден прямо в чате, а не только по ссылке.
+async function sendFirstSticker(userId, pack) {
+  if (!config.botToken) return;
+  try {
+    const bot = await build.botForPack(pack);
+    const set = await tg.tgApi(bot.token, "getStickerSet", { name: pack.short_name });
+    const first = set && set.stickers && set.stickers[0];
+    if (!first) return;
+    await tg.tgApi(config.botToken, "sendSticker", {
+      chat_id: userId,
+      sticker: first.file_id,
+    });
+  } catch (err) {
+    console.warn("[bot] sendFirstSticker failed:", err.message);
   }
 }
 
@@ -219,10 +249,15 @@ function storeUploadedTgs(userId, buf) {
   // Имя файла узнаем только после вставки (upload:N), поэтому двухшагово:
   const item = db.addUploadItem({ file: "pending", user_id: userId });
   const fileName = `${item.id.replace("upload:", "")}.tgs`;
-  fs.writeFileSync(path.join(catalog.UPLOAD_DIR, fileName), buf);
-  db.open()
-    .prepare("UPDATE upload_items SET file = ? WHERE id = ?")
-    .run(fileName, item.id);
+  try {
+    fs.writeFileSync(path.join(catalog.UPLOAD_DIR, fileName), buf);
+    db.open()
+      .prepare("UPDATE upload_items SET file = ? WHERE id = ?")
+      .run(fileName, item.id);
+  } catch (err) {
+    db.deleteUploadItem(item.id);
+    throw err;
+  }
   item.file = fileName;
   return item;
 }
@@ -483,6 +518,12 @@ async function handleMainUpdate(update) {
       await handleCallback(update.callback_query);
     } catch (err) {
       console.error("[bot] callback error:", err.message);
+      const uid = update.callback_query.from && update.callback_query.from.id;
+      if (uid) {
+        await tg
+          .sendMessage(config.botToken, uid, `${e("warn")} Не получилось: ${escapeHtml(err.message)}`)
+          .catch(() => {});
+      }
     }
     return;
   }
@@ -499,16 +540,28 @@ async function handleMainUpdate(update) {
     return;
   }
 
+  // Команды отменяют незавершённый диалог, чтобы ввод не "залипал".
+  if (text.startsWith("/") && text !== "/cancel") db.clearPending(userId);
+
   // Ожидающее действие (переименование/добавление/удаление) перехватывает ввод.
   const pending = db.getPending(userId);
   if (pending && pending.action) {
-    const fileId = await extractAnimatedFileId(msg);
-    if (fileId && pending.action === "add") {
-      await handlePendingFile(userId, pending, fileId);
+    try {
+      const fileId = await extractAnimatedFileId(msg);
+      if (fileId && pending.action === "add") {
+        await handlePendingFile(userId, pending, fileId);
+        return;
+      }
+      if (text && !text.startsWith("/")) {
+        if (await handlePendingText(userId, pending, text)) return;
+      }
+    } catch (err) {
+      console.error("[bot] pending action failed:", err.message);
+      db.clearPending(userId);
+      await tg
+        .sendMessage(config.botToken, userId, `${e("warn")} Не получилось: ${escapeHtml(err.message)}`)
+        .catch(() => {});
       return;
-    }
-    if (text && !text.startsWith("/")) {
-      if (await handlePendingText(userId, pending, text)) return;
     }
   }
 
