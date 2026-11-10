@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Редактор пака</title>
+<style>
+  html, body { margin: 0; background: #000; color: #fff; }
+  body.splash-active { overflow: hidden; }
+  .swex-splash { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; background: #000; color: #fff; }
+  .swex-splash-core { width: min(84vw, 360px); display: flex; flex-direction: column; gap: 13px; }
+  .swex-splash-lockup { height: 64px; width: auto; max-width: 100%; display: block; margin: 0 auto; }
+  .swex-splash-track { height: 13px; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,.08); }
+  .swex-splash-fill { width: var(--swex-load, 6%); height: 100%; background: #fff; border-radius: 999px; }
+</style>
+  <link rel="stylesheet" href="/static/style.css?v=130">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="/static/lottie.min.js?v=61"></script>
+<script src="/static/pako.min.js?v=61"></script>
+<script src="/static/opentype.min.js?v=61"></script>
+</head>
+<body class="splash-active">
+<div id="swex-splash" class="swex-splash" style="--swex-load: 6%;" role="status" aria-live="polite">
+  <div class="swex-splash-grid" aria-hidden="true">
+    <span></span><span></span><span></span><span></span>
+  </div>
+  <main class="swex-splash-core">
+    <div class="swex-splash-topline">
+      <a href="https://leanhustle.net/" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;">LeanHustle</a>
+      <span id="swex-splash-percent">06%</span>
+    </div>
+    <div class="swex-splash-brand">
+      <img class="swex-splash-lockup" src="/static/swex-loader-lockup.png?v=3" alt="LeanHustle">
+    </div>
+    <div class="swex-splash-title">emoji studio</div>
+    <div id="swex-splash-label" class="swex-splash-label">Готовим эмодзи</div>
+    <div class="swex-splash-track">
+      <div id="swex-splash-bar" class="swex-splash-fill"></div>
+    </div>
+  </main>
+</div>
+<div id="app">
+  <div id="view-home" class="swex-home view hidden">
+    <header class="swex-home-nav">
+      <button class="swex-home-mark" type="button" data-swex-open="home" aria-label="LeanHustle home">
+        <span class="swex-triangle" aria-hidden="true"></span>
+        <span>LeanHustle</span>
+      </button>
+      <nav class="swex-home-links" aria-label="LeanHustle navigation">
+        <button type="button" data-swex-open="editor">Editor</button>
+        <button type="button" data-swex-open="icons">Icons</button>
+        <button type="button" data-swex-open="packs">Packs</button>
+      </nav>
+      <button class="swex-home-login" type="button" data-swex-open="packs">Dashboard</button>
+    </header>
+
+    <main class="swex-home-main">
+      <section class="swex-home-hero">
+        <div class="swex-home-eyebrow">
+          <span>Custom emoji infrastructure</span>
+          <span>for Telegram</span>
+        </div>
+        <h1>LeanHustle Studio</h1>
+        <p class="swex-home-lead">Собирай эмодзи, иконки и паки в одном жестком редакторе.</p>
+        <div class="swex-home-actions">
+          <button class="swex-home-cta primary" type="button" data-swex-open="editor">Открыть редактор</button>
+          <button class="swex-home-cta" type="button" data-swex-open="icons">Собрать иконки</button>
+        </div>
+      </section>
+
+      <section class="swex-home-product" aria-label="LeanHustle product">
+        <div class="swex-orbit" aria-hidden="true">
+          <div class="swex-orbit-screen">
+            <div class="swex-orbit-top">
+              <span></span><span></span><span></span>
+              <b>leanhustle/runtime</b>
+            </div>
+            <div class="swex-orbit-body">
+              <div class="swex-orbit-preview">
+                <span>L</span><span>E</span><span>A</span><span>N</span>
+              </div>
+              <div class="swex-orbit-lines">
+                <i></i><i></i><i></i><i></i>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="swex-home-grid" aria-label="LeanHustle sections">
+        <article class="swex-home-card">
+          <span class="swex-card-index">01</span>
+          <h2>Emoji Editor</h2>
+          <p>Ник, цвет, слои, градиенты и сборка пака через готовый backend.</p>
+          <button type="button" data-swex-open="editor">Launch editor</button>
+        </article>
+        <article class="swex-home-card">
+          <span class="swex-card-index">02</span>
+          <h2>Icon Packs</h2>
+          <p>Отдельный экран для иконок с тем же пайплайном оплаты и создания.</p>
+          <button type="button" data-swex-open="icons">Open icons</button>
+        </article>
+        <article class="swex-home-card">
+          <span class="swex-card-index">03</span>
+          <h2>My Packs</h2>
+          <p>Паки, дозалив, переименование и конвертация остаются на старом API.</p>
+          <button type="button" data-swex-open="packs">View packs</button>
+        </article>
+      </section>
+
+      <section class="swex-home-latest" aria-label="LeanHustle launch">
+        <div>
+          <span class="swex-home-kicker">Latest</span>
+          <h2>После интро открывается LeanHustle, не голый редактор.</h2>
+        </div>
+        <button class="swex-home-cta primary" type="button" data-swex-open="editor">Start building</button>
+      </section>
+    </main>
+  </div>
+
+  <!-- Top-level view switcher: Emoji / Icons / My Packs -->
+  <div class="topbar">
+    <button class="topbar-tab active" data-view="editor" type="button">Эмодзи</button>
+    <button class="topbar-tab" data-view="icons" type="button">Иконки</button>
+    <button class="topbar-tab" data-view="packs" type="button">
+      <span class="tt-label">Мои паки</span>
+      <span id="packs-count-badge" class="tt-badge hidden">0</span>
+    </button>
+  </div>
+
+  <div id="view-editor" class="view">
+  <!-- Анимированное превью текущего эмодзи -->
+  <div class="preview-wrap">
+    <div class="preview-row">
+      <button id="prev" class="nav-btn nav-btn-side" type="button" aria-label="Предыдущее">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path d="M15 5 L8 12 L15 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <div class="preview-stage">
+        <div id="preview" class="preview"></div>
+        <!-- Маленький бейдж включения в правом-верхнем углу превью.
+             Виден только в стикер-режиме. -->
+        <button id="preview-pin" class="preview-pin hidden" type="button"
+                aria-label="Добавить / убрать из пака" title="Добавить / убрать из пака">
+          <svg class="pin-plus" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <svg class="pin-check" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path d="M3 8.5 L7 12 L13 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </button>
+        <button id="preview-style-brush" class="preview-style-brush style-brush-btn hidden" type="button"
+                aria-label="Убрать стиль с этого эмодзи" title="Убрать стиль с этого эмодзи">
+          <svg class="brush-icon" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+            <path d="m14.622 17.897-10.68-2.913M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .707l.944.944a2.41 2.41 0 0 1 0 3.408l-.944.944a.5.5 0 0 1-.707 0L8.354 7.348a.5.5 0 0 1 0-.707l.944-.944a2.41 2.41 0 0 1 3.408 0l.944.944a.5.5 0 0 0 .707 0zM9 8c-1.804 2.71-3.97 3.46-6.583 3.948a.507.507 0 0 0-.302.819l7.32 8.883a1 1 0 0 0 1.185.204C12.735 20.405 16 16.792 16 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <svg class="brush-check" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path d="M3 8.5 L7 12 L13 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </button>
+      </div>
+      <button id="next" class="nav-btn nav-btn-side" type="button" aria-label="Следующее">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path d="M9 5 L16 12 L9 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="preview-strip-dock">
+      <div class="preview-strip-wrap">
+      <div id="preview-strip" class="preview-strip" role="listbox" aria-label="Все эмодзи"></div>
+    </div>
+      <div class="preview-counter-row">
+      <button id="counter" class="preview-counter" type="button" aria-expanded="false" aria-controls="emoji-picker-panel">
+        <span class="pc-mark" aria-hidden="true"></span>
+        <span class="pc-title">Каталог</span>
+        <span class="pc-chevron" aria-hidden="true"></span>
+        </button>
+      </div>
+    </div>
+    <div id="emoji-picker-panel" class="emoji-picker-panel hidden">
+      <div class="emoji-picker-head">
+        <span class="emoji-picker-title">Каталог</span>
+        <span id="emoji-picker-count" class="emoji-picker-count">0</span>
+      </div>
+      <div class="emoji-picker-search-wrap">
+        <input id="emoji-picker-search" class="emoji-picker-search" type="text" inputmode="numeric" placeholder="Номер" autocomplete="off" autocorrect="off" spellcheck="false">
+      </div>
+      <div id="emoji-picker-grid" class="emoji-picker-grid" role="listbox" aria-label="Каталог эмодзи"></div>
+    </div>
+  </div>
+
+  <!-- Tabs убраны — всё генерируется в редакторе. Скрытые тригнеры
+       сохранены ниже как пустые узлы, чтоб app.js не падал на querySelector. -->
+  <div class="tabs hidden" aria-hidden="true">
+    <button class="tab active" data-tab="editor"></button>
+  </div>
+
+  <!-- Selection bar: count + live price + bulk actions -->
+  <div id="select-bar" class="select-bar hidden">
+    <div class="select-count">
+      <span id="select-count-num">0</span><span class="select-count-sep">/</span><span id="select-count-max">200</span>
+    </div>
+    <span id="pack-price" class="pack-price">—</span>
+    <div class="select-actions">
+      <button id="select-all" class="ghost-sm">Все</button>
+      <button id="select-random" class="ghost-sm">Рандом</button>
+      <button id="select-none" class="ghost-sm">Снять</button>
+    </div>
+  </div>
+
+  <!-- ── Editor tab ───────────────────────────── -->
+  <section class="panel" data-panel="editor">
+    <!-- Глобальная секция: ник/лого, применяется ко всем -->
+    <div class="row label">НИК / ЛОГОТИП (для выбранных эмодзи)</div>
+    <div class="seg">
+      <button class="seg-btn active" data-mode="text">Текст</button>
+      <button class="seg-btn"         data-mode="logo">Лого</button>
+    </div>
+
+    <div class="row" data-mode-only="text">
+      <div class="input-wrap">
+        <input id="text-input" type="text" maxlength="20" placeholder="введи ник">
+        <span id="text-counter" class="hint">0/20</span>
+      </div>
+    </div>
+    <div class="text-scope-row">
+      <div class="text-scope-copy">
+        <span id="text-scope-title">Общий ник</span>
+        <span id="text-scope-sub">применяется ко всем без своего ника</span>
+      </div>
+      <div class="text-scope-actions">
+        <button id="text-scope-global" class="text-scope-btn active" type="button">Всем</button>
+        <button id="text-scope-tile" class="text-scope-btn" type="button">Этому</button>
+        <button id="text-scope-reset" class="text-scope-reset hidden" type="button">Сброс</button>
+      </div>
+    </div>
+
+    <div class="font-picker" data-mode-only="text">
+      <div class="font-control-row">
+        <button id="font-toggle" class="font-toggle" type="button"
+                aria-expanded="false" aria-controls="font-menu">
+          <span class="font-toggle-label">Шрифт</span>
+          <span id="font-current" class="font-current">Seymour One</span>
+          <span class="font-chevron" aria-hidden="true">⌄</span>
+        </button>
+        <button id="font-apply-all" class="font-apply-all" type="button">Ко всем</button>
+      </div>
+      <div id="font-menu" class="font-menu hidden" role="listbox"
+           aria-label="Шрифт ника"></div>
+    </div>
+
+    <div class="row" data-mode-only="logo">
+      <label class="file-btn">
+        <input id="logo-input" type="file" accept=".svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp" hidden>
+        <span id="logo-label">Загрузить SVG или фото</span>
+      </label>
+      <div id="logo-png-hint" class="section-hint hidden">PNG/фото преобразуется в цветные векторные слои TGS: 512×512, нативная анимация до 60 FPS и без видеосжатия. Работает и для premium/custom emoji, и для стикерпаков.</div>
+    </div>
+
+    <div class="row label">ЦВЕТ ТЕКСТА / ЛОГО</div>
+    <div class="section-hint">Красит ник или загруженный логотип поверх эмодзи</div>
+    <div class="color-row">
+      <span class="slider-name">Цвет</span>
+      <label class="color-input-wrap">
+        <input id="content-color" type="color" value="#ffffff">
+      </label>
+      <span class="slider-val" id="content-color-val">#FFFFFF</span>
+    </div>
+
+    <div class="content-action-row">
+      <button id="apply-color-all" class="content-action primary" type="button">Цвет ко всем</button>
+      <span class="content-action-hint">ник / логотип</span>
+    </div>
+
+    <div class="gradient-row" data-mode-only="text">                                          <button id="gradient-toggle" class="gradient-toggle" type="button" aria-pressed="false">
+        <span class="gradient-chip" aria-hidden="true"></span>                                  <span>Градиент</span>
+      </button>
+      <div id="gradient-controls" class="gradient-controls hidden">                             <label class="gradient-color">
+          <input id="gradient-from" type="color" value="#ffffff">
+        </label>                                                                                <span class="gradient-arrow">→</span>
+        <label class="gradient-color">
+          <input id="gradient-to" type="color" value="#30d158">                                 </label>
+      </div>
+    </div>                                                                              
+    <div class="row label">ЦВЕТ ЭМОДЗИ</div>
+    <div class="section-hint">Красит рисунок эмодзи, а не текст сверху</div>                <div class="row btns">
+      <button id="layer-colors-open" class="layer-colors-btn" type="button"
+              title="Расширенный редактор цветов слоёв">                                        <span class="lc-icon" aria-hidden="true">
+          <span class="lc-stack lc-stack-3"></span>
+          <span class="lc-stack lc-stack-2"></span>                                               <span class="lc-stack lc-stack-1"></span>
+        </span>
+        <span class="lc-label">Слои</span>                                                    </button>
+    </div>
+                                                                                            <!-- Advanced color editor — modal listing every unique fill/stroke in
+         the current emoji's TGS, each remappable to a custom hex. -->
+    <div id="layer-colors-modal" class="lcm-backdrop hidden">                                 <div class="lcm-card">
+        <div class="lcm-head">
+          <span class="lcm-title">Цвета слоёв эмодзи</span>                                       <button id="layer-colors-close" class="lcm-close" type="button" title="Закрыть">×</button>
+        </div>                                                                                  <div class="lcm-actions">
+          <button id="layer-colors-reset" class="lcm-btn-ghost" type="button">Сбросить</button>                                                                                           <span class="lcm-hint">Цвета рисунка эмодзи, не ника. Превью обновится сразу</span>
+        </div>                                                                                  <div id="layer-colors-list" class="lcm-list"></div>
+      </div>
+    </div>                                                                              
+    <div class="pack-palette-row">
+      <div class="pack-palette-copy">                                                           <span class="pack-palette-title">Обводка и заливка эмодзи</span>
+        <span id="pack-palette-status" class="pack-palette-status">весь пак сразу, а не один эмодзи</span>                                                                            </div>
+      <div class="pack-palette-controls">
+        <label class="pack-palette-color" title="Тёмные и цветные слои">                          <input id="pack-palette-primary" type="color" value="#ff2d55">
+        </label>
+        <label class="pack-palette-color" title="Светлые слои">                                   <input id="pack-palette-light" type="color" value="#ffffff">
+        </label>
+        <button id="pack-palette-gradient" class="pack-palette-gradient" type="button" aria-pressed="false">
+          <span class="palette-gradient-icon" aria-hidden="true"></span>
+          <span>&#1043;&#1088;&#1072;&#1076;&#1080;&#1077;&#1085;&#1090;</span>                 </button>
+        <button id="pack-palette-apply" class="pack-palette-apply" type="button">Ко всем</button>                                                                                       <button id="pack-palette-reset" class="pack-palette-reset" type="button">Сброс</button>
+      </div>                                                                                  <div class="pack-palette-presets">
+        <button type="button" data-palette-primary="#ff2d55" data-palette-light="#ffffff">                                                                                                <span class="palette-dot palette-dot-red" aria-hidden="true"></span><span>Красный</span>
+        </button>                                                                               <button type="button" data-palette-primary="#000000" data-palette-light="#ffffff">
+          <span class="palette-dot palette-dot-bw" aria-hidden="true"></span><span>Ч/Б</span>
+        </button>
+        <button type="button" data-palette-primary="#5e5ce6" data-palette-light="#f5f5f7">
+          <span class="palette-dot palette-dot-neon" aria-hidden="true"></span><span>Неон</span>                                                                                        </button>
+      </div>
+    </div>                                                                              
+    <div class="pack-style-row" id="pack-style-row">
+      <button id="pack-style-toggle" class="pack-style-toggle" type="button" aria-expanded="false" aria-controls="pack-style-panel">
+        <span class="pack-style-mark" aria-hidden="true">
+          <svg viewBox="0 0 20 20" width="16" height="16">                                          <path d="M5.2 13.7c2.9-5.1 5.2-7.8 8.7-9.4l1.8 1.8c-1.8 3.4-4.4 5.8-9.5 8.6l-2.4 1.5 1.4-2.5Z" fill="currentColor"/>
+            <path d="M12.7 4.9l2.4 2.4" fill="none" stroke="rgba(0,0,0,.55)" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </span>                                                                                 <span class="pack-style-copy">
+          <span class="pack-style-title">Стили пака</span>
+          <span class="pack-style-sub">выбери стиль для отдельных эмодзи</span>                 </span>
+        <span id="pack-style-status" class="pack-style-status"></span>
+        <span class="pack-style-chevron" aria-hidden="true">                                      <svg viewBox="0 0 16 16" width="14" height="14">
+            <path d="M4 6.2 8 10l4-3.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>                                               </svg>
+        </span>
+      </button>                                                                               <div id="pack-style-panel" class="pack-style-panel">
+        <div id="pack-style-presets" class="pack-style-presets"></div>
+      </div>                                                                                </div>
+
+    <div class="slider">                                                                      <span class="slider-name">Ротация</span>
+      <input type="range" id="g-content-rotation" min="-180" max="180" step="1" value="0">                                                                                            <span class="slider-val" id="g-content-rotation-val">0°</span>
+    </div>
+    <div class="content-action-row compact">                                                  <button id="apply-rotation-all" class="content-action" type="button">Поворот ко всем</button>
+    </div>                                                                              
+    <!-- Per-emoji секция: паспорт (только для тайла-паспорта) -->
+    <div id="passport-lines" class="hidden">                                                  <div class="pp-section-head">
+        <span class="pp-icon">�</span>
+        <span class="pp-section-title">Паспорт</span>                                           <button id="passport-reset" class="pp-reset" title="Сбросить все правки">Сбросить</button>
+      </div>                                                                            
+      <!-- Фото (заменяет «?») -->
+      <div class="pp-photo-card">                                                               <div id="passport-photo-preview" class="pp-photo-preview">
+          <span class="pp-photo-q">?</span>
+        </div>                                                                                  <div class="pp-photo-meta">
+          <div class="pp-photo-title">Фото паспорта</div>
+          <div class="pp-photo-hint">SVG заменит знак вопроса в чёрном квадрате</div>             <div class="pp-photo-actions">
+            <label class="pp-btn-sm">
+              <input id="passport-photo-svg" type="file" accept=".svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp" hidden>
+              <span id="passport-photo-label">Загрузить SVG или фото</span>
+            </label>                                                                                <button id="passport-photo-clear" class="pp-btn-sm pp-btn-sm-ghost hidden" type="button">Убрать</button>
+          </div>                                                                                  <div id="passport-photo-size" class="pp-photo-size hidden">
+            <span class="pp-photo-size-label">Размер</span>
+            <input id="passport-photo-scale" type="range" min="30" max="300" step="5" value="100">
+            <span id="passport-photo-scale-val" class="pp-photo-size-val">100%</span>
+          </div>                                                                                  <div id="passport-photo-color-row" class="pp-photo-color hidden">
+            <span class="pp-photo-size-label">Цвет</span>
+            <input id="passport-photo-color" type="color" value="#ffffff" aria-label="Цвет SVG лого">
+            <span id="passport-photo-color-val" class="pp-photo-size-val">#FFFFFF</span>
+          </div>                                                                                </div>
+      </div>
+                                                                                              <!-- Строки -->
+      <div class="pp-lines-head">Строки</div>
+      <div id="passport-lines-rows" class="pp-rows"></div>                                  </div>
+
+    <!-- Per-emoji секция: размер и позиция для текущего тайла -->                          <div class="row label">РАЗМЕР И ПОЗИЦИЯ ТЕКСТА / ЛОГО</div>
+    <div class="section-hint">Двигает и масштабирует текст/лого, а не сам эмодзи</div>
+    <div class="slider">                                                                      <span class="slider-name">Размер</span>
+      <input type="range" id="s-scale"   min="50"   max="500" step="5" value="100">
+      <span class="slider-val" id="v-scale">100%</span>                                     </div>
+    <div class="slider">
+      <span class="slider-name">Позиция X</span>                                              <input type="range" id="s-offset-x" min="-200" max="200" step="2" value="0">
+      <span class="slider-val" id="v-offset-x">0</span>
+    </div>                                                                                  <div class="slider">
+      <span class="slider-name">Позиция Y</span>
+      <input type="range" id="s-offset-y" min="-200" max="200" step="2" value="0">            <span class="slider-val" id="v-offset-y">0</span>
+    </div>
+                                                                                            <div class="row btns">
+      <button id="apply-all" class="ghost">Применить ко всем</button>
+      <button id="reset-one"  class="ghost">Сбросить</button>                               </div>
+
+    <div class="row label fmt-label">ВЫБЕРИ ФОРМАТ ПАКА</div>                               <div class="seg fmt-seg">
+      <button class="seg-btn active" data-format="emoji">Эмодзи</button>
+      <button class="seg-btn"        data-format="sticker">Стикер</button>                  </div>
+  </section>
+                                                                                          <!-- Скрытые контейнеры под grid/new: app.js всё ещё ссылается на эти ID
+       (rebuildGrid/rebuildGridNew/selection-state). DOM сохранили, табы
+       пользователю не показываем. -->                                                    <section class="panel hidden" data-panel="grid" aria-hidden="true">
+    <div id="grid" class="grid"></div>
+  </section>                                                                              <section class="panel hidden" data-panel="new" aria-hidden="true">
+    <div id="grid-new" class="grid grid-new"></div>
+  </section>                                                                            
+  <!-- Bottom CTA -->
+  <div class="cta-wrap">                                                                    <div class="cta-card cta-card-strong">
+      <button id="generate" class="cta" disabled>Создать пак</button>
+      <button id="pack-bot-settings-btn" class="pack-bot-settings-btn hidden" type="button"></button>
+      <div id="pack-bot-hint" class="pack-bot-hint hidden"></div>
+      <div id="status" class="status"></div>                                                </div>
+  </div>
+  </div><!-- /#view-editor -->                                                          
+  <!-- ── Icons view ─────────────────────────────────────────────── -->
+  <div id="view-icons" class="view hidden">                                                 <iframe id="icons-frame" class="icons-frame" src="/static/icons.html?v=18" title="Редактор иконок" loading="eager"></iframe>
+  </div>                                                                                
+  <!-- ── My Packs view ─────────────────────────────────────────── -->
+  <div id="view-packs" class="view hidden">                                                 <div id="packs-list-view">
+      <div class="packs-head">
+        <span class="packs-head-title">Твои паки</span>                                         <span id="packs-head-count" class="packs-head-count">—</span>
+      </div>
+      <div id="packs-list" class="packs-list">                                                  <div class="packs-skel">Загружаю…</div>
+      </div>
+      <div id="packs-empty" class="packs-empty hidden">                                         <div class="packs-empty-emoji">📦</div>
+        <div class="packs-empty-title">Здесь будут твои паки</div>
+        <div class="packs-empty-hint">Собери первый пак в редакторе — он появится здесь, и ты сможешь дозаливать недостающие эмодзи или менять название.</div>
+      </div>
+    </div>                                                                              
+    <div id="pack-detail-view" class="hidden">
+      <div class="pd-bar">                                                                      <button id="pd-back" class="pd-back" type="button" aria-label="Назад">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path d="M15 5 L8 12 L15 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>                                                                               <div class="pd-title-wrap">
+          <div class="pd-title-row">
+            <span id="pd-title" class="pd-title">…</span>                                           <input id="pd-title-input" class="pd-title-input hidden" type="text" maxlength="40">
+            <button id="pd-rename" class="pd-rename" type="button" aria-label="Переименовать" title="Переименовать">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path d="M4 17 L4 20 L7 20 L17 10 L14 7 Z M14 7 L17 4 L20 7 L17 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>                                                                                </button>
+          </div>
+          <div id="pd-suffix" class="pd-suffix">by @bot</div>                                   </div>
+        <a id="pd-open" class="pd-open" target="_blank" rel="noopener" aria-label="Открыть в Telegram" title="Открыть в Telegram">                                                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path d="M5 12 H19 M13 6 L19 12 L13 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>                                   </svg>
+        </a>
+      </div>                                                                            
+      <div class="pd-stats">
+        <span class="pd-chip" id="pd-format">эмодзи</span>                                      <span class="pd-chip pd-chip-mono"><span id="pd-have">0</span>/<span id="pd-cap">200</span></span>
+        <span class="pd-chip pd-chip-accent hidden" id="pd-stage-chip">                           <span id="pd-stage-count">0</span> в очередь · <span id="pd-stage-cost">0₽</span>
+        </span>                                                                               </div>
+
+      <div class="pd-convert-box">                                                              <button id="pd-convert" class="pd-convert-btn" type="button">
+          <span class="pd-convert-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18">                                          <path d="M7 7h9.5a3 3 0 0 1 0 6H14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+              <path d="M9.5 4.5 7 7l2.5 2.5M17 17H7.5a3 3 0 0 1 0-6H10" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+              <path d="M14.5 14.5 17 17l-2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>                                     </svg>
+          </span>
+          <span class="pd-convert-copy">                                                            <span id="pd-convert-title" class="pd-convert-title">Создать другой формат</span>
+            <span id="pd-convert-sub" class="pd-convert-sub">25₽ · результат придёт в бота</span>
+          </span>
+        </button>                                                                               <div id="pd-convert-status" class="pd-convert-status"></div>
+      </div>
+                                                                                              <div class="pd-template-box">
+        <button id="pd-template" class="pd-template-btn" type="button">
+          <span class="pd-template-mark" aria-hidden="true">                                        <svg viewBox="0 0 24 24" width="17" height="17">
+              <path d="M7 5.5h10a2 2 0 0 1 2 2v8.8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.8"/>                                   <path d="M8.2 9.2h7.6M8.2 12h5.2M8.2 14.8h6.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>                                                                                </span>
+          <span class="pd-template-copy">
+            <span class="pd-template-title">Использовать как шаблон</span>                          <span class="pd-template-sub">Перенести стиль в новый пак</span>
+          </span>
+        </button>                                                                               <div id="pd-template-status" class="pd-template-status"></div>
+      </div>
+                                                                                              <div id="pd-grid-wrap">
+        <div id="pd-grid" class="pd-grid"></div>
+                                                                                                <div id="pd-add-wrap" class="pd-cta-wrap pd-cta-sticky hidden">
+          <div class="cta-card cta-card-strong">
+            <button id="pd-add" class="cta" type="button" disabled>Добавить эмодзи</button>
+            <div id="pd-status" class="status"></div>
+          </div>                                                                                </div>
+      </div>
+                                                                                              <!-- Per-tile mini-editor (opens when user taps a missing tile) -->
+      <div id="pd-edit" class="pd-edit hidden">
+        <div class="pde-bar">                                                                     <button id="pde-back" class="pd-back" type="button" aria-label="Назад">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path d="M15 5 L8 12 L15 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>                                                                               <div class="pde-title-wrap">
+            <div class="pde-title" id="pde-title">Эмодзи</div>
+            <div class="pde-sub" id="pde-sub">Настрой как тебе нравится</div>                     </div>
+          <button id="pde-remove" class="pde-remove hidden" type="button" aria-label="Убрать из очереди" title="Убрать из очереди">                                                         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path d="M5 5 L19 19 M19 5 L5 19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>                                                               </svg>
+          </button>
+        </div>                                                                          
+        <div class="pde-preview-wrap">
+          <div class="pde-preview-stage">                                                           <div id="pde-preview" class="preview"></div>
+          </div>
+        </div>                                                                          
+        <div class="row label">РЕЖИМ ТАЙЛА</div>
+        <div class="seg pde-seg">                                                                 <button class="seg-btn active" data-pde-kind="text" type="button">Текст</button>
+          <button class="seg-btn"         data-pde-kind="logo" type="button">Лого</button>
+        </div>
+                                                                                                <div id="pde-text-row" class="row">
+          <div class="input-wrap">
+            <input id="pde-text" type="text" maxlength="20" placeholder="оставь пустым → ник из пака">
+            <span id="pde-text-counter" class="hint">0/20</span>
+          </div>                                                                                </div>
+
+        <div id="pde-font-picker" class="font-picker pde-font-picker">
+          <div class="font-control-row">
+            <button id="pde-font-toggle" class="font-toggle" type="button"
+                    aria-expanded="false" aria-controls="pde-font-menu">
+              <span class="font-toggle-label">Шрифт</span>
+              <span id="pde-font-current" class="font-current">Seymour One</span>
+              <span class="font-chevron" aria-hidden="true">⌄</span>
+            </button>
+          </div>
+          <div id="pde-font-menu" class="font-menu hidden" role="listbox"
+               aria-label="Шрифт эмодзи"></div>
+        </div>
+
+        <div id="pde-logo-row" class="row hidden pde-logo-row">
+          <label class="file-btn">
+            <input id="pde-logo-input" type="file" accept=".svg,.png,.jpg,.jpeg,.webp,image/svg+xml,image/png,image/jpeg,image/webp" hidden>
+            <span id="pde-logo-label">Загрузить SVG или фото</span>
+          </label>
+          <button id="pde-logo-clear" class="ghost hidden" type="button">Убрать</button>
+          <div id="pde-logo-png-hint" class="section-hint hidden">PNG/фото будет преобразовано в цветные векторные слои полноразмерного TGS и сохранит нативную анимацию.</div>
+        </div>
+
+        <div class="row label">ЦВЕТ И РОТАЦИЯ</div>
+        <div class="color-row">
+          <span class="slider-name">Цвет</span>
+          <label class="color-input-wrap">
+            <input id="pde-color" type="color" value="#ffffff">
+          </label>
+          <span class="slider-val" id="pde-color-val">#FFFFFF</span>
+          <button id="pde-layer-colors-open" class="layer-colors-btn" type="button"
+                  title="&#1056;&#1072;&#1089;&#1096;&#1080;&#1088;&#1077;&#1085;&#1085;&#1099;&#1081; &#1088;&#1077;&#1076;&#1072;&#1082;&#1090;&#1086;&#1088; &#1094;&#1074;&#1077;&#1090;&#1086;&#1074; &#1089;&#1083;&#1086;&#1105;&#1074;">
+            <span class="lc-icon" aria-hidden="true">
+              <span class="lc-stack lc-stack-3"></span>
+              <span class="lc-stack lc-stack-2"></span>
+              <span class="lc-stack lc-stack-1"></span>
+            </span>
+            <span class="lc-label">&#1057;&#1083;&#1086;&#1080;</span>
+          </button>
+        </div>
+        <div id="pde-gradient-row" class="gradient-row pde-gradient-row">
+          <button id="pde-gradient-toggle" class="gradient-toggle" type="button" aria-pressed="false">
+            <span class="gradient-chip" aria-hidden="true"></span>
+            <span>&#1043;&#1088;&#1072;&#1076;&#1080;&#1077;&#1085;&#1090;</span>
+          </button>
+          <div id="pde-gradient-controls" class="gradient-controls hidden">
+            <label class="gradient-color">
+              <input id="pde-gradient-from" type="color" value="#ffffff">
+            </label>
+            <span class="gradient-arrow">&#8594;</span>
+            <label class="gradient-color">
+              <input id="pde-gradient-to" type="color" value="#30d158">
+            </label>
+          </div>
+        </div>
+        <div class="slider">
+          <span class="slider-name">Ротация</span>
+          <input type="range" id="pde-rotation" min="-180" max="180" step="1" value="0">
+          <span class="slider-val" id="pde-rotation-val">0°</span>
+        </div>
+
+        <div class="row label">РАЗМЕР И ПОЗИЦИЯ ЭТОЙ СТРОКИ</div>
+        <div class="section-hint">Двигает и масштабирует эту строку текста, а не эмодзи</div>
+        <div class="slider">
+          <span class="slider-name">Размер</span>
+          <input type="range" id="pde-scale" min="50" max="500" step="5" value="100">
+          <span class="slider-val" id="pde-scale-val">100%</span>
+        </div>
+        <div class="slider">
+          <span class="slider-name">Позиция X</span>
+          <input type="range" id="pde-offset-x" min="-200" max="200" step="2" value="0">
+          <span class="slider-val" id="pde-offset-x-val">0</span>
+        </div>
+        <div class="slider">
+          <span class="slider-name">Позиция Y</span>
+          <input type="range" id="pde-offset-y" min="-200" max="200" step="2" value="0">
+          <span class="slider-val" id="pde-offset-y-val">0</span>
+        </div>
+
+        <div class="row btns pde-btns">
+          <button id="pde-reset" class="ghost" type="button">Сбросить</button>
+        </div>
+
+        <div class="pd-cta-wrap pd-cta-sticky">
+          <div class="cta-card cta-card-strong">
+            <button id="pde-save" class="cta" type="button">Добавить в очередь</button>
+            <div class="status" id="pde-status"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: имя пака перед стартом сборки -->
+  <div id="name-modal" class="name-modal hidden" role="dialog" aria-modal="true" aria-labelledby="name-modal-title">
+    <div class="name-modal-backdrop"></div>
+    <div class="name-modal-card">
+      <div class="name-modal-icon" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="28" height="28">
+          <rect x="3" y="6" width="26" height="20" rx="4" fill="none" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M9 14 H23 M9 19 H19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div id="name-modal-title" class="name-modal-title">Назови пак</div>
+      <div class="name-modal-hint">Это имя увидят все, кто откроет пак.<br>К нему автоматически добавится <span class="suffix-chip">by @<span id="name-modal-bot">swexmakerbot</span></span></div>
+      <div class="name-modal-input-wrap">
+        <input id="name-modal-input" type="text" maxlength="40" placeholder="например, Lean" autocomplete="off" autocorrect="off" spellcheck="false">
+        <span id="name-modal-counter" class="name-modal-counter">0/40</span>
+      </div>
+      <div class="name-modal-preview">
+        <span id="name-modal-preview-text">Lean</span>
+        <span class="name-modal-preview-suffix">by @<span class="name-modal-bot2">swexmakerbot</span></span>
+      </div>
+      <div class="name-modal-actions">
+        <button id="name-modal-cancel" class="ghost" type="button">Отмена</button>
+        <button id="name-modal-ok"     class="cta name-modal-ok" type="button">Создать</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: сколько случайных эмодзи выбрать -->
+  <div id="random-count-modal" class="name-modal hidden" role="dialog" aria-modal="true" aria-labelledby="random-count-title">
+    <div class="name-modal-backdrop"></div>
+    <div class="name-modal-card">
+      <div class="name-modal-icon" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="28" height="28">
+          <circle cx="10" cy="10" r="2.3" fill="currentColor"/>
+          <circle cx="22" cy="10" r="2.3" fill="currentColor"/>
+          <circle cx="16" cy="16" r="2.3" fill="currentColor"/>
+          <circle cx="10" cy="22" r="2.3" fill="currentColor"/>
+          <circle cx="22" cy="22" r="2.3" fill="currentColor"/>
+        </svg>
+      </div>
+      <div id="random-count-title" class="name-modal-title">Сколько эмодзи?</div>
+      <div class="name-modal-hint">Выберем случайные эмодзи из каталога вместо ручного тыка</div>
+      <div class="name-modal-input-wrap no-counter">
+        <input id="random-count-input" type="number" inputmode="numeric" min="1" placeholder="например, 50" autocomplete="off">
+      </div>
+      <div id="random-count-range" class="random-count-range">от 1 до 200</div>
+      <div class="name-modal-actions">
+        <button id="random-count-cancel" class="ghost" type="button">Отмена</button>
+        <button id="random-count-ok"     class="cta name-modal-ok" type="button">Выбрать</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: пользовательский бот для создания паков -->
+  <div id="bot-account-modal" class="bot-account-modal hidden" role="dialog" aria-modal="true" aria-labelledby="bot-account-title">
+    <div class="bot-account-backdrop"></div>
+    <div class="bot-account-card">
+      <div class="bot-account-head">
+        <div class="bot-account-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22">
+            <path d="M12 3.5v3M7.5 7h9A3.5 3.5 0 0 1 20 10.5v5A3.5 3.5 0 0 1 16.5 19h-9A3.5 3.5 0 0 1 4 15.5v-5A3.5 3.5 0 0 1 7.5 7Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+            <path d="M9 12.5h.01M15 12.5h.01M9.5 15.5h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div>
+          <div id="bot-account-title" class="bot-account-title">Бот для паков</div>
+          <div id="bot-account-current" class="bot-account-current">Не подключён</div>
+        </div>
+      </div>
+      <label class="bot-account-field">
+        <span>Bot API token</span>
+        <input id="bot-token-input" type="password" placeholder="123456789:ABC..." autocomplete="off" autocorrect="off" spellcheck="false">
+      </label>
+      <label class="bot-account-field">
+        <span>Owner user ID</span>
+        <input id="bot-owner-input" type="text" inputmode="numeric" placeholder="1887174420" autocomplete="off" autocorrect="off" spellcheck="false">
+      </label>
+      <div class="bot-account-note">Пак будет создан через этот бот, а в названии останется подпись <b>by @swexmakerbot</b>. После сохранения нажми <b>/start</b> в этом боте, чтобы Telegram разрешил создание пака.</div>
+      <div id="bot-account-status" class="bot-account-status"></div>
+      <a id="bot-account-open" class="bot-account-open hidden" target="_blank" rel="noopener">Открыть бота</a>
+      <button id="bot-account-recheck" class="bot-account-recheck hidden" type="button">Я нажал /start, проверить</button>
+      <div class="bot-account-actions">
+        <button id="bot-account-delete" class="ghost" type="button">Сбросить</button>
+        <button id="bot-account-cancel" class="ghost" type="button">Отмена</button>
+        <button id="bot-account-save" class="cta" type="button">Сохранить</button>
+      </div>
+    </div>
+  </div>
+</div>
+  <script src="/static/replacer.js?v=90"></script>
+<script src="/static/app.js?v=165"></script>
+</body>
+</html>
