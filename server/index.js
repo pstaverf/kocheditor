@@ -316,12 +316,12 @@ async function handleApi(req, res, url) {
   if (p === "/api/billing/invoice" && method === "POST") {
     const user = authUser(req, res);
     if (!user) return;
-    if (!config.botToken) return sendError(res, 503, "Бот не настроен на сервере");
     const body = await readJson(req).catch(() => ({}));
     const amount = Math.floor(Number(body.amount));
     if (!Number.isFinite(amount) || amount < 1 || amount > 500) {
       return sendError(res, 400, "Сумма пополнения — от 1 до 500 ⭐");
     }
+    if (!config.botToken) return sendError(res, 503, "Бот не настроен на сервере");
     try {
       const url = await tg.tgApi(config.botToken, "createInvoiceLink", {
         title: "Пополнение баланса",
