@@ -9,6 +9,7 @@ const zlib = require("zlib");
 process.env.DATA_DIR = process.env.DATA_DIR || require("os").tmpdir() + "/kocheditor-selftest-" + process.pid;
 process.env.BOT_TOKEN = "111:fake-test-token";
 process.env.ADMIN_IDS = "4242";
+process.env.STICKER_DELAY_MS = "1"; // в тестах не спим по-настоящему
 process.env.PUBLIC_URL = "https://example.test";
 const ROOT = path.resolve(__dirname, "..");
 const PORT = 18000 + Math.floor(Math.random() * 900);
@@ -72,6 +73,9 @@ function assert(cond, msg) {
     };
     try {
       const bot = require("./bot");
+      assert(bot.formatRemaining(45000) === "45 сек", "eta: 45 сек форматируется");
+      assert(bot.formatRemaining(90000) === "1 мин 30 сек", "eta: 1 мин 30 сек форматируется");
+      assert(bot.formatRemaining(600000) === "10 мин", "eta: 10 мин форматируется");
       require("./catalog").scan();
       const db = require("./db");
       db.open();

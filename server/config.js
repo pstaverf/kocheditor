@@ -55,6 +55,9 @@ module.exports = {
     .filter(Number.isFinite),
   // Цена: 1 стикер/эмодзи = 1 Telegram Star.
   starPerSticker: 1,
+  // Пауза между загрузками стикеров в Telegram (мс): с ней сборка чуть
+  // дольше, зато не ловим "Too Many Requests: retry after …".
+  stickerDelayMs: intEnv("STICKER_DELAY_MS", 300),
   // Публичный бот, который пишется в подпись «by @…» (как в оригинальном фронте).
   publicPackBotUsername:
     (process.env.PUBLIC_PACK_BOT_USERNAME || "swexmakerbot").replace(/^@+/, ""),

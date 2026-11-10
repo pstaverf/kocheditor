@@ -177,6 +177,14 @@ function serializePack(pack) {
   };
 }
 
+// Пауза между вызовами загрузки/изменения стикеров: Telegram жёстко
+// лимитит sticker-методы, без паузы прилетает "Too Many Requests".
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function paceUploads() {
+  const ms = Number(config.stickerDelayMs) || 0;
+  if (ms > 0) await sleep(ms);
+}
+
 async function createPack({ userId, title, format, ids, global, perEmoji, onProgress }) {
   const bot = await resolveBot(userId);
   if (!bot) {
@@ -210,6 +218,7 @@ async function createPack({ userId, title, format, ids, global, perEmoji, onProg
   const fileIds = [];
   let uploaded = 0;
   for (const r of rendered) {
+    if (uploaded > 0) await paceUploads();
     fileIds.push(await tg.uploadStickerFile(bot.token, bot.ownerId, r.tgs));
     uploaded++;
     if (onProgress) await onProgress("upload", uploaded, rendered.length);
@@ -288,8 +297,11 @@ async function addTiles(pack, tileIds, overrides, onProgress) {
     .slice(0, Math.max(0, cap - includedSet.size));
   const rendered = await renderTiles(queue, pack.global, perEmoji, errors, onProgress);
   const added = [];
+  let addedIx = 0;
   for (const r of rendered) {
     try {
+      if (addedIx > 0) await paceUploads();
+      addedIx++;
       const fileId = await tg.uploadStickerFile(bot.token, bot.ownerId, r.tgs);
       await tg.addSticker(bot.token, { userId: bot.ownerId, name: pack.short_name, stickerFileId: fileId });
       added.push(r.id);
@@ -354,6 +366,7 @@ async function removeTiles(pack, positions) {
   for (const pos of targets) {
     const sticker = stickers[pos - 1];
     if (!sticker) continue;
+    if (removed.length > 0) await paceUploads();
     await tg.tgApi(bot.token, "deleteStickerFromSet", { sticker_file_id: sticker.file_id });
     removed.push(pack.included[pos - 1]);
     pack.included.splice(pos - 1, 1);

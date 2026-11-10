@@ -121,6 +121,21 @@ function webAppKeyboard() {
   return { inline_keyboard: [[{ text: "🎨 Открыть редактор", web_app: { url: config.publicUrl } }]] };
 }
 
+// Человекочитаемая длительность: 45 сек / 1 мин 20 сек / 12 мин.
+function formatRemaining(ms) {
+  const sec = Math.max(1, Math.round(ms / 1000));
+  if (sec < 60) return `${sec} сек`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s ? `${m} мин ${s} сек` : `${m} мин`;
+}
+// Веса стадий сборки для оценки общего прогресса и оставшегося времени.
+const STAGE_SPAN = {
+  render: [0, 0.45],
+  upload: [0.45, 0.45],
+  create: [0.9, 0.1],
+};
+
 function progressBar(done, total) {
   const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
   const filled = Math.round(pct / 10);
@@ -146,6 +161,7 @@ async function startProgress(userId, title, queuePosition = 0) {
     return null;
   }
   const messageId = msg.message_id;
+  let startedAt = 0;
   let lastText = "";
   let lastStage = "";
   let lastPct = -100;
@@ -168,6 +184,7 @@ async function startProgress(userId, title, queuePosition = 0) {
       );
     },
     async begin() {
+      startedAt = Date.now();
       await edit(`${e("timer")} <b>Загружаю…</b>\n${escapeHtml(title)}\n${progressBar(0, 1)}`);
     },
     async update(stage, done, total) {
@@ -185,8 +202,17 @@ async function startProgress(userId, title, queuePosition = 0) {
           : stage === "upload"
             ? "Отправляю в Telegram"
             : "Создаю пак";
+      // Оценка оставшегося времени по уже затраченному и доле готовности.
+      if (!startedAt) startedAt = now;
+      const span = STAGE_SPAN[stage] || [0, 1];
+      const frac = span[0] + span[1] * (total > 0 ? done / total : 1);
+      let etaLine = "";
+      if (frac > 0.03 && frac < 1) {
+        const etaMs = ((now - startedAt) * (1 - frac)) / frac;
+        if (etaMs >= 3000) etaLine = `\nОсталось ждать ~${formatRemaining(etaMs)}`;
+      }
       await edit(
-        `${e("timer")} <b>Загружаю…</b>\n${escapeHtml(title)}\n${label}: ${done}/${total}\n${progressBar(done, total)}`
+        `${e("timer")} <b>Загружаю…</b>\n${escapeHtml(title)}\n${label}: ${done}/${total}\n${progressBar(done, total)}${etaLine}`
       );
     },
     async done(text, replyMarkup) {
@@ -1044,6 +1070,8 @@ function newWebhookSecret() {
 }
 
 module.exports = {
+  formatRemaining,
+  ANTISPAM,
   handleMainUpdate,
   handlePackBotUpdate,
   newWebhookSecret,
